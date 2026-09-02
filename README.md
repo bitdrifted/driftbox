@@ -43,9 +43,9 @@ Save it to a file:
 driftbox report > driftbox-report.json
 ```
 
-Reports include the hostname, local network addresses, operating-system details, architecture, Python environment, WSL status, Driftbox version, and a UTC generation timestamp.
+Reports include system details, local network addresses, listening ports, process information, exposure classifications, the Driftbox version, and a UTC generation timestamp.
 
-Review reports before sharing them because they may contain local system and network information.
+Review reports before sharing them because they may contain hostnames, local addresses, process names, process IDs, and other system information.
 
 ## compatibility
 

@@ -148,6 +148,10 @@ class ReportTests(unittest.TestCase):
     """Test portable report generation and serialization."""
 
     @patch(
+        "driftbox.cli.collect_listening_ports",
+        return_value=[{"port": 8080, "scope": "all interfaces"}],
+    )
+    @patch(
         "driftbox.cli.collect_network_info",
         return_value={"ipv4_addresses": ["192.168.0.10"]},
     )
@@ -159,6 +163,7 @@ class ReportTests(unittest.TestCase):
         self,
         _: object,
         __: object,
+        ___: object,
     ) -> None:
         report = build_report()
 
@@ -169,6 +174,14 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(
             report["network"],
             {"ipv4_addresses": ["192.168.0.10"]},
+        )
+        self.assertEqual(
+            report["exposure"],
+            {
+                "listening_ports": [
+                    {"port": 8080, "scope": "all interfaces"},
+                ],
+            },
         )
 
     @patch(
