@@ -16,6 +16,7 @@ from driftbox.cli import (
     environment_name,
     running_in_wsl,
     show_report,
+    classify_address_scope,
 )
 
 
@@ -75,6 +76,14 @@ class NetworkTests(unittest.TestCase):
 class PortTests(unittest.TestCase):
     """Test listening-port collection."""
 
+    def test_classifies_common_address_scopes(self) -> None:
+        self.assertEqual(classify_address_scope("0.0.0.0"), "all interfaces")
+        self.assertEqual(classify_address_scope("::"), "all interfaces")
+        self.assertEqual(classify_address_scope("127.0.0.1"), "local only")
+        self.assertEqual(classify_address_scope("192.168.1.10"), "private network")
+        self.assertEqual(classify_address_scope("fe80::1%12"), "link local")
+        self.assertEqual(classify_address_scope("8.8.8.8"), "public address")
+
     @patch("driftbox.cli.psutil.Process")
     @patch("driftbox.cli.psutil.net_connections")
     def test_collects_tcp_listeners_and_udp_ports(
@@ -112,6 +121,7 @@ class PortTests(unittest.TestCase):
                 {
                     "protocol": "UDP",
                     "address": "0.0.0.0",
+                    "scope": "all interfaces",
                     "port": 53,
                     "pid": None,
                     "process": "unavailable",
@@ -119,6 +129,7 @@ class PortTests(unittest.TestCase):
                 {
                     "protocol": "TCP",
                     "address": "0.0.0.0",
+                    "scope": "all interfaces",
                     "port": 8080,
                     "pid": 42,
                     "process": "test-server",
