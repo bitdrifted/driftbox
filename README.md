@@ -20,9 +20,15 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 |---|---|
 | `driftbox info` | Display system and execution-environment information |
 | `driftbox network` | Display local network information |
-| `driftbox ports` | Display listening TCP and locally bound UDP ports |
+| `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
 | `driftbox report` | Generate a machine-readable JSON report |
+## port exposure
 
+Inspect services accepting network traffic:
+
+```bash
+driftbox ports
+```
 ## portable reports
 
 Display a report in the terminal:

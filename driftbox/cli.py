@@ -70,6 +70,28 @@ def collect_network_addresses() -> tuple[list[str], list[str]]:
     # Stable ordering keeps reports predictable for humans, tests, and automation.
     return sorted(ipv4_addresses), sorted(ipv6_addresses)
 
+def classify_address_scope(address: str) -> str:
+    """Describe the network scope of a local listening address."""
+    # IPv6 addresses may include an interface identifier after a percent sign.
+    normalized_address = address.split("%", maxsplit=1)[0]
+
+    try:
+        parsed_address = ipaddress.ip_address(normalized_address)
+    except ValueError:
+        return "unknown"
+
+    if parsed_address.is_unspecified:
+        return "all interfaces"
+    if parsed_address.is_loopback:
+        return "local only"
+    if parsed_address.is_link_local:
+        return "link local"
+    if parsed_address.is_private:
+        return "private network"
+
+    # A public binding may still be protected by a firewall or upstream router.
+    return "public address"
+
 def collect_listening_ports() -> list[dict[str, object]]:
     """Collect TCP listeners and locally bound UDP ports."""
     listening_ports: list[dict[str, object]] = []
@@ -105,6 +127,7 @@ def collect_listening_ports() -> list[dict[str, object]]:
             {
                 "protocol": protocol,
                 "address": connection.laddr.ip,
+                "scope": classify_address_scope(connection.laddr.ip),
                 "port": connection.laddr.port,
                 "pid": connection.pid,
                 "process": process_name,
@@ -196,11 +219,20 @@ def show_listening_ports() -> None:
     listening_ports = collect_listening_ports()
 
     print("driftbox :: listening ports")
-    print("-" * 72)
 
     if not listening_ports:
+        print("-" * 32)
         print("No accessible listening ports detected.")
         return
+
+    print(
+        f"{'NET':<3} "
+        f"{'SCOPE':<17} "
+        f"{'ENDPOINT':<45} "
+        f"{'PID':<7} "
+        "PROCESS"
+    )
+    print("-" * 92)
 
     for item in listening_ports:
         address = str(item["address"])
@@ -210,8 +242,9 @@ def show_listening_ports() -> None:
 
         print(
             f"{item['protocol']:<3} "
+            f"{item['scope']:<17} "
             f"{endpoint:<45} "
-            f"pid={str(pid):<7} "
+            f"{str(pid):<7} "
             f"{item['process']}"
         )
 
