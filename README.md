@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, portable JSON reports, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -20,6 +20,7 @@ System inspection, network inspection, portable JSON reports, automated tests, a
 |---|---|
 | `driftbox info` | Display system and execution-environment information |
 | `driftbox network` | Display local network information |
+| `driftbox ports` | Display listening TCP and locally bound UDP ports |
 | `driftbox report` | Generate a machine-readable JSON report |
 
 ## portable reports
@@ -55,7 +56,6 @@ Driftbox automatically detects the operating environment and exposes information
 
 - File-integrity verification
 - Security configuration checks
-- Listening-port inspection
 - Optional report redaction
 
 ## operating principles

@@ -4,6 +4,7 @@ import io
 import json
 import socket
 import unittest
+import psutil
 from contextlib import redirect_stdout
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from driftbox.cli import (
     build_report,
     collect_network_addresses,
+    collect_listening_ports,
     environment_name,
     running_in_wsl,
     show_report,
@@ -70,6 +72,66 @@ class NetworkTests(unittest.TestCase):
     )
     def test_handles_interface_lookup_failure(self, _: object) -> None:
         self.assertEqual(collect_network_addresses(), ([], []))
+class PortTests(unittest.TestCase):
+    """Test listening-port collection."""
+
+    @patch("driftbox.cli.psutil.Process")
+    @patch("driftbox.cli.psutil.net_connections")
+    def test_collects_tcp_listeners_and_udp_ports(
+        self,
+        net_connections: object,
+        process: object,
+    ) -> None:
+        net_connections.return_value = [
+            SimpleNamespace(
+                type=socket.SOCK_STREAM,
+                status=psutil.CONN_LISTEN,
+                laddr=SimpleNamespace(ip="0.0.0.0", port=8080),
+                pid=42,
+            ),
+            SimpleNamespace(
+                type=socket.SOCK_STREAM,
+                status=psutil.CONN_ESTABLISHED,
+                laddr=SimpleNamespace(ip="192.168.0.10", port=50000),
+                pid=42,
+            ),
+            SimpleNamespace(
+                type=socket.SOCK_DGRAM,
+                status=psutil.CONN_NONE,
+                laddr=SimpleNamespace(ip="0.0.0.0", port=53),
+                pid=None,
+            ),
+        ]
+        process.return_value.name.return_value = "test-server"
+
+        ports = collect_listening_ports()
+
+        self.assertEqual(
+            ports,
+            [
+                {
+                    "protocol": "UDP",
+                    "address": "0.0.0.0",
+                    "port": 53,
+                    "pid": None,
+                    "process": "unavailable",
+                },
+                {
+                    "protocol": "TCP",
+                    "address": "0.0.0.0",
+                    "port": 8080,
+                    "pid": 42,
+                    "process": "test-server",
+                },
+            ],
+        )
+
+    @patch(
+        "driftbox.cli.psutil.net_connections",
+        side_effect=psutil.AccessDenied,
+    )
+    def test_handles_connection_lookup_failure(self, _: object) -> None:
+        self.assertEqual(collect_listening_ports(), [])
 
 class ReportTests(unittest.TestCase):
     """Test portable report generation and serialization."""
