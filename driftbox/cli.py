@@ -8,6 +8,7 @@ import platform
 import socket
 import sys
 from datetime import datetime, timezone
+import psutil
 
 from driftbox import __version__
 
@@ -35,36 +36,39 @@ def environment_name() -> str:
 
 
 def collect_network_addresses() -> tuple[list[str], list[str]]:
-    """Collect non-loopback IP addresses associated with the hostname."""
+    """Collect non-loopback IP addresses from local network interfaces."""
     ipv4_addresses: set[str] = set()
     ipv6_addresses: set[str] = set()
 
     try:
-        address_info = socket.getaddrinfo(socket.gethostname(), None)
-    except socket.gaierror:
-        # Hostname resolution can fail on offline or unusually configured systems.
+        interfaces = psutil.net_if_addrs()
+    except (OSError, RuntimeError, psutil.Error):
+        # Inspection should fail safely on restricted or unusual systems.
         return [], []
 
-    for family, _, _, _, socket_address in address_info:
-        # IPv6 scope identifiers describe an interface but are not part of the address.
-        address = socket_address[0].split("%", maxsplit=1)[0]
+    for interface_addresses in interfaces.values():
+        for interface_address in interface_addresses:
+            if interface_address.family not in (socket.AF_INET, socket.AF_INET6):
+                continue
 
-        try:
-            parsed_address = ipaddress.ip_address(address)
-        except ValueError:
-            continue
+            # IPv6 scope identifiers describe an interface, not the address itself.
+            address = interface_address.address.split("%", maxsplit=1)[0]
 
-        if parsed_address.is_loopback:
-            continue
+            try:
+                parsed_address = ipaddress.ip_address(address)
+            except ValueError:
+                continue
 
-        if family == socket.AF_INET:
-            ipv4_addresses.add(address)
-        elif family == socket.AF_INET6:
-            ipv6_addresses.add(address)
+            if parsed_address.is_loopback:
+                continue
+
+            if interface_address.family == socket.AF_INET:
+                ipv4_addresses.add(address)
+            else:
+                ipv6_addresses.add(address)
 
     # Stable ordering keeps reports predictable for humans, tests, and automation.
     return sorted(ipv4_addresses), sorted(ipv6_addresses)
-
 
 def collect_system_info() -> dict[str, object]:
     """Collect system details without formatting them for a specific output."""

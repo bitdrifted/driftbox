@@ -6,6 +6,7 @@ import socket
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from driftbox.cli import (
     build_report,
@@ -37,13 +38,26 @@ class EnvironmentTests(unittest.TestCase):
 class NetworkTests(unittest.TestCase):
     """Test local network-address collection."""
 
-    @patch("driftbox.cli.socket.getaddrinfo")
-    def test_collects_addresses_and_removes_loopback(self, getaddrinfo: object) -> None:
-        getaddrinfo.return_value = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.0.10", 0)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%12", 0, 0, 12)),
-        ]
+    @patch("driftbox.cli.psutil.net_if_addrs")
+    def test_collects_addresses_and_removes_loopback(self, net_if_addrs: object) -> None:
+        net_if_addrs.return_value = {
+            "loopback": [
+                SimpleNamespace(
+                    family=socket.AF_INET,
+                    address="127.0.0.1",
+                ),
+            ],
+            "ethernet": [
+                SimpleNamespace(
+                    family=socket.AF_INET,
+                    address="192.168.0.10",
+                ),
+                SimpleNamespace(
+                    family=socket.AF_INET6,
+                    address="fe80::1%12",
+                ),
+            ],
+        }
 
         ipv4_addresses, ipv6_addresses = collect_network_addresses()
 
@@ -51,12 +65,11 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(ipv6_addresses, ["fe80::1"])
 
     @patch(
-        "driftbox.cli.socket.getaddrinfo",
-        side_effect=socket.gaierror,
+        "driftbox.cli.psutil.net_if_addrs",
+        side_effect=OSError,
     )
-    def test_handles_address_lookup_failure(self, _: object) -> None:
+    def test_handles_interface_lookup_failure(self, _: object) -> None:
         self.assertEqual(collect_network_addresses(), ([], []))
-
 
 class ReportTests(unittest.TestCase):
     """Test portable report generation and serialization."""
