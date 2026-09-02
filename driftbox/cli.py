@@ -70,6 +70,58 @@ def collect_network_addresses() -> tuple[list[str], list[str]]:
     # Stable ordering keeps reports predictable for humans, tests, and automation.
     return sorted(ipv4_addresses), sorted(ipv6_addresses)
 
+def collect_listening_ports() -> list[dict[str, object]]:
+    """Collect TCP listeners and locally bound UDP ports."""
+    listening_ports: list[dict[str, object]] = []
+
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except (OSError, RuntimeError, psutil.Error):
+        # Some systems restrict access to connection information for non-admin users.
+        return []
+
+    for connection in connections:
+        if not connection.laddr:
+            continue
+
+        if connection.type == socket.SOCK_STREAM:
+            if connection.status != psutil.CONN_LISTEN:
+                continue
+            protocol = "TCP"
+        elif connection.type == socket.SOCK_DGRAM:
+            # UDP has no connection handshake, so a bound socket has no LISTEN state.
+            protocol = "UDP"
+        else:
+            continue
+
+        process_name = "unavailable"
+        if connection.pid is not None:
+            try:
+                process_name = psutil.Process(connection.pid).name()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+
+        listening_ports.append(
+            {
+                "protocol": protocol,
+                "address": connection.laddr.ip,
+                "port": connection.laddr.port,
+                "pid": connection.pid,
+                "process": process_name,
+            }
+        )
+
+    # Predictable ordering makes terminal output and JSON reports easier to compare.
+    return sorted(
+        listening_ports,
+        key=lambda item: (
+            item["port"],
+            item["protocol"],
+            item["address"],
+            item["pid"] or -1,
+        ),
+    )
+
 def collect_system_info() -> dict[str, object]:
     """Collect system details without formatting them for a specific output."""
     return {
@@ -139,6 +191,29 @@ def show_network_info() -> None:
     print(f"ipv4        : {', '.join(ipv4_addresses) or 'not detected'}")
     print(f"ipv6        : {', '.join(ipv6_addresses) or 'not detected'}")
 
+def show_listening_ports() -> None:
+    """Display TCP listeners and locally bound UDP ports."""
+    listening_ports = collect_listening_ports()
+
+    print("driftbox :: listening ports")
+    print("-" * 72)
+
+    if not listening_ports:
+        print("No accessible listening ports detected.")
+        return
+
+    for item in listening_ports:
+        address = str(item["address"])
+        host = f"[{address}]" if ":" in address else address
+        endpoint = f"{host}:{item['port']}"
+        pid = item["pid"] if item["pid"] is not None else "-"
+
+        print(
+            f"{item['protocol']:<3} "
+            f"{endpoint:<45} "
+            f"pid={str(pid):<7} "
+            f"{item['process']}"
+        )
 
 def show_report() -> None:
     """Write the complete Driftbox report as formatted JSON."""
@@ -160,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("info", help="Display system and environment information")
     commands.add_parser("network", help="Display local network information")
+    commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
 
     return parser
@@ -174,6 +250,8 @@ def main() -> None:
         show_system_info()
     elif args.command == "network":
         show_network_info()
+    elif args.command == "ports":
+        show_listening_ports()
     elif args.command == "report":
         show_report()
     else:
