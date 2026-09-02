@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A cross-platform terminal toolkit for system inspection, security checks, and resilient operations."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = ["psutil>=7.0"]
 license = "MIT"
 authors = [
     { name = "bitdrifted" }
