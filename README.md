@@ -12,15 +12,33 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-The cross-platform foundation and first system-inspection command are operational.
+System inspection, network inspection, portable JSON reports, automated tests, and cross-platform validation are operational.
 
-## current command
+## current commands
 
-```text
-driftbox info
+| Command | Purpose |
+|---|---|
+| `driftbox info` | Display system and execution-environment information |
+| `driftbox network` | Display local network information |
+| `driftbox report` | Generate a machine-readable JSON report |
+
+## portable reports
+
+Display a report in the terminal:
+
+```bash
+driftbox report
 ```
 
-Displays the execution environment, operating system, architecture, hostname, Python version, executable path, and WSL status.
+Save it to a file:
+
+```bash
+driftbox report > driftbox-report.json
+```
+
+Reports include the hostname, local network addresses, operating-system details, architecture, Python environment, WSL status, Driftbox version, and a UTC generation timestamp.
+
+Review reports before sharing them because they may contain local system and network information.
 
 ## compatibility
 
@@ -35,11 +53,10 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## planned capabilities
 
-- Network visibility and diagnostics
 - File-integrity verification
 - Security configuration checks
-- Portable system reports
-- Cross-platform terminal interface
+- Listening-port inspection
+- Optional report redaction
 
 ## operating principles
 
@@ -70,10 +87,10 @@ Install Driftbox:
 python -m pip install -e .
 ```
 
-Run the first command:
+Run the test suite:
 
 ```bash
-driftbox info
+python -m unittest discover -s tests -v
 ```
 
 ## license

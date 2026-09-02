@@ -1,13 +1,18 @@
 """Tests for the Driftbox command-line interface."""
 
+import io
+import json
 import socket
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from driftbox.cli import (
+    build_report,
     collect_network_addresses,
     environment_name,
     running_in_wsl,
+    show_report,
 )
 
 
@@ -51,6 +56,49 @@ class NetworkTests(unittest.TestCase):
     )
     def test_handles_address_lookup_failure(self, _: object) -> None:
         self.assertEqual(collect_network_addresses(), ([], []))
+
+
+class ReportTests(unittest.TestCase):
+    """Test portable report generation and serialization."""
+
+    @patch(
+        "driftbox.cli.collect_network_info",
+        return_value={"ipv4_addresses": ["192.168.0.10"]},
+    )
+    @patch(
+        "driftbox.cli.collect_system_info",
+        return_value={"operating_system": "TestOS"},
+    )
+    def test_build_report_contains_expected_sections(
+        self,
+        _: object,
+        __: object,
+    ) -> None:
+        report = build_report()
+
+        self.assertEqual(report["schema_version"], 1)
+        self.assertIn("driftbox_version", report)
+        self.assertIn("generated_at", report)
+        self.assertEqual(report["system"], {"operating_system": "TestOS"})
+        self.assertEqual(
+            report["network"],
+            {"ipv4_addresses": ["192.168.0.10"]},
+        )
+
+    @patch(
+        "driftbox.cli.build_report",
+        return_value={"schema_version": 1, "status": "ok"},
+    )
+    def test_show_report_emits_valid_json(self, _: object) -> None:
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            show_report()
+
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            {"schema_version": 1, "status": "ok"},
+        )
 
 
 if __name__ == "__main__":
