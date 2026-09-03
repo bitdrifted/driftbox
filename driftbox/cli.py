@@ -24,6 +24,7 @@ from driftbox.report_diff import (
     load_baseline,
     normalize_report,
 )
+from driftbox.security_checks import analyze_security_posture, format_check_result
 
 from driftbox import __version__
 
@@ -355,6 +356,29 @@ def verify_integrity(path: str, manifest_path: str) -> int:
     return 1 if changes.found else 0
 
 
+def show_security_checks(json_output: bool = False) -> int:
+    """Analyze current inspection data and return a command exit code."""
+    try:
+        result = analyze_security_posture(
+            collect_firewall_info(),
+            collect_listening_ports(),
+        )
+        if json_output:
+            output = json.dumps(result.as_dict(), indent=2, sort_keys=True)
+        else:
+            output = format_check_result(result)
+        print(output)
+    except Exception as error:
+        try:
+            print(f"driftbox: security check failed: {error}", file=sys.stderr)
+        except Exception:
+            # The original failure may be the output stream itself.
+            pass
+        return 2
+
+    return 1 if result.findings else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -372,6 +396,16 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("network", help="Display local network information")
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
+    check_parser = commands.add_parser(
+        "check",
+        help="Analyze firewall and listening-port security posture",
+    )
+    check_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Write a machine-readable JSON result",
+    )
     diff_parser = commands.add_parser(
         "diff",
         help="Compare the current report with a saved baseline",
@@ -421,6 +455,8 @@ def main() -> int:
         if args.integrity_command == "create":
             return create_integrity_manifest(args.path, args.output)
         return verify_integrity(args.path, args.manifest)
+    elif args.command == "check":
+        return show_security_checks(args.json_output)
     else:
         parser.print_help()
 
