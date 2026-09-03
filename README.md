@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, persistent configuration, configured scanning, safe scan scheduling, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -34,6 +34,14 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox history list [--json]` | List saved report snapshots newest first |
 | `driftbox history show SNAPSHOT` | Display a stored report snapshot |
 | `driftbox history diff SNAPSHOT` | Compare current state with a stored snapshot |
+| `driftbox config show [--json]` | Display persistent per-user settings |
+| `driftbox config set KEY VALUE` | Update one validated setting |
+| `driftbox config reset` | Restore default settings |
+| `driftbox scan [--json]` | Analyze, verify configured targets, and capture a report |
+| `driftbox schedule install --daily HH:MM [--dry-run]` | Install or preview a daily per-user scan |
+| `driftbox schedule status` | Show scheduled-scan state |
+| `driftbox schedule remove` | Remove Driftbox's scheduled scan |
+
 ## port exposure
 
 Inspect services accepting network traffic:
@@ -221,6 +229,100 @@ Set `DRIFTBOX_STATE_DIR` to override the history directory for testing or
 advanced use. Stored reports can contain hostnames, network addresses, process
 details, and other sensitive local information. Protect the history directory
 and review snapshots before sharing them.
+
+## persistent configuration
+
+Display the current configuration in readable or machine-readable form:
+
+```bash
+driftbox config show
+driftbox config show --json
+```
+
+Update one setting without changing the others, or restore all defaults:
+
+```bash
+driftbox config set history_retention_days 14
+driftbox config set scan_output json
+driftbox config reset
+```
+
+The schema-versioned JSON configuration starts with these settings:
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `history_retention_days` | `30` | Retention preference for future history management; snapshots are not automatically deleted yet |
+| `default_baseline` | `latest` | Use the newest valid history snapshot as the scan baseline |
+| `integrity_targets` | `[]` | JSON array of `path` and `manifest` pairs verified during a scan |
+| `scan_output` | `human` | Default `human` or `json` scan presentation |
+
+For example, PowerShell or a POSIX shell can configure an integrity target with:
+
+```bash
+driftbox config set integrity_targets '[{"path":"important","manifest":"important-manifest.json"}]'
+```
+
+Every key and value is validated, unknown keys are rejected, and updates are
+written atomically. Driftbox configuration contains behavior and path settings,
+not credentials or secrets. The default file locations are:
+
+- Windows: `%LOCALAPPDATA%\Driftbox\config.json`
+- macOS: `~/Library/Application Support/Driftbox/config.json`
+- Linux and WSL: `${XDG_CONFIG_HOME:-~/.config}/driftbox/config.json`
+
+Set `DRIFTBOX_CONFIG_DIR` to an alternate configuration directory for an
+isolated lab or test. This override is separate from `DRIFTBOX_STATE_DIR`, which
+controls report-history storage.
+
+## configured scans
+
+Run the complete configured workflow without interactive prompts:
+
+```bash
+driftbox scan
+driftbox scan --json
+```
+
+A scan loads configuration, collects the current report, compares it with the
+previous history snapshot, evaluates current security posture, and verifies all
+configured integrity targets. Only after those steps succeed does it atomically
+append the current report to history. It never compares a new snapshot with
+itself or replaces the prior snapshot.
+
+If history is empty, the first successful scan captures the initial baseline and
+reports a `normal` baseline-initialization finding. Later unchanged scans return
+status `0`. Status `1` means one or more `suspicious` or `critical` findings were
+reported. Status `2` means configuration, input, storage, or another operational
+step failed. JSON scan output is schema-versioned and findings remain
+deterministically ordered.
+
+## scheduled scans
+
+Preview a daily schedule before installing it:
+
+```bash
+driftbox schedule install --daily 02:30 --dry-run
+```
+
+Install, inspect, or remove the schedule:
+
+```bash
+driftbox schedule install --daily 02:30
+driftbox schedule status
+driftbox schedule remove
+```
+
+Windows uses a per-user Task Scheduler task named `Driftbox Daily Scan`. Linux
+and macOS use the current user's crontab with a Driftbox-owned marker. The job
+runs `driftbox scan` headlessly. Times use local 24-hour `HH:MM` format.
+
+`--dry-run` prints the escaped scheduler action and makes no scheduler change.
+Status distinguishes `installed`, `absent`, `unsupported`, and `malformed`.
+Driftbox verifies its stable task name, exact executable, scan argument, or cron
+marker before replacement or removal; unrelated tasks and crontab entries are
+preserved. Malformed, unsupported, invalid, or operational scheduler errors
+return status `2`. Installation and removal do not require administrator access
+where the platform permits per-user scheduling.
 
 ## compatibility
 
