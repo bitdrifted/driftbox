@@ -10,6 +10,8 @@ import sys
 from datetime import datetime, timezone
 import psutil
 
+from driftbox.firewall import collect_firewall_info
+
 from driftbox import __version__
 
 
@@ -250,6 +252,45 @@ def show_listening_ports() -> None:
             f"{str(pid):<7} "
             f"{item['process']}"
         )
+def show_firewall_info() -> None:
+    """Display firewall status without changing its configuration."""
+    firewall = collect_firewall_info()
+
+    print("driftbox :: firewall information")
+    print("-" * 72)
+    print(f"platform : {firewall['platform']}")
+    print(f"provider : {firewall['provider']}")
+    print(f"status   : {firewall['status']}")
+
+    profiles = firewall.get("profiles", [])
+
+    if not isinstance(profiles, list) or not profiles:
+        return
+
+    print()
+    print(f"{'PROFILE':<10} {'ENABLED':<9} {'INBOUND':<18} {'OUTBOUND'}")
+    print("-" * 72)
+
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+
+        enabled = profile.get("enabled")
+
+        if enabled is True:
+            enabled_text = "yes"
+        elif enabled is False:
+            enabled_text = "no"
+        else:
+            enabled_text = "unknown"
+
+        print(
+            f"{str(profile.get('name', 'Unknown')):<10} "
+            f"{enabled_text:<9} "
+            f"{str(profile.get('default_inbound', 'Unknown')):<18} "
+            f"{profile.get('default_outbound', 'Unknown')}"
+        )
+
 
 def show_report() -> None:
     """Write the complete Driftbox report as formatted JSON."""
@@ -274,6 +315,12 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
 
+    commands.add_parser(
+        "firewall",
+        help="inspect local firewall status",
+    )
+
+    return parser
     return parser
 
 
@@ -288,6 +335,8 @@ def main() -> None:
         show_network_info()
     elif args.command == "ports":
         show_listening_ports()
+    elif args.command == "firewall":
+        show_firewall_info()
     elif args.command == "report":
         show_report()
     else:
