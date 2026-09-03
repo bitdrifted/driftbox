@@ -164,11 +164,8 @@ def _validate_manifest_path(value: object, index: int) -> str:
     return value
 
 
-def load_manifest(path: str) -> IntegritySnapshot:
-    """Read and validate an integrity manifest."""
-    with Path(path).open(encoding="utf-8-sig") as manifest_file:
-        manifest = json.load(manifest_file)
-
+def integrity_snapshot_from_data(manifest: object) -> IntegritySnapshot:
+    """Validate manifest-shaped data from a file or synthetic evidence source."""
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be a JSON object")
     schema_version = manifest.get("schema_version")
@@ -210,6 +207,13 @@ def load_manifest(path: str) -> IntegritySnapshot:
     if records != sorted(records):
         raise ValueError("manifest files are not in deterministic path order")
     return IntegritySnapshot(root_type, tuple(records))
+
+
+def load_manifest(path: str) -> IntegritySnapshot:
+    """Read and validate an integrity manifest."""
+    with Path(path).open(encoding="utf-8-sig") as manifest_file:
+        manifest = json.load(manifest_file)
+    return integrity_snapshot_from_data(manifest)
 
 
 def compare_integrity(

@@ -35,6 +35,15 @@ from driftbox.history import (
     read_snapshot,
     snapshot_listing_data,
 )
+from driftbox.mission_commands import (
+    reset_mission,
+    show_mission_brief,
+    show_mission_list,
+    show_mission_status,
+    show_next_hint,
+    start_mission,
+    submit_mission,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -630,6 +639,29 @@ def remove_schedule() -> int:
     return 2 if result.state == "unsupported" else 0
 
 
+def run_mission_command(args: argparse.Namespace) -> int:
+    """Run a synthetic training command with consistent error handling."""
+    try:
+        if args.mission_command == "list":
+            show_mission_list(args.json_output)
+        elif args.mission_command == "start":
+            start_mission(args.mission)
+        elif args.mission_command == "brief":
+            show_mission_brief()
+        elif args.mission_command == "status":
+            show_mission_status()
+        elif args.mission_command == "hint":
+            show_next_hint()
+        elif args.mission_command == "submit":
+            submit_mission()
+        else:
+            reset_mission()
+    except Exception as error:
+        _show_command_error("mission", error)
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -742,6 +774,23 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_install.add_argument("--dry-run", action="store_true")
     schedule_commands.add_parser("status", help="Show scheduled scan status")
     schedule_commands.add_parser("remove", help="Remove the scheduled scan")
+    mission_parser = commands.add_parser(
+        "mission",
+        help="Play isolated synthetic cybersecurity training missions",
+    )
+    mission_commands = mission_parser.add_subparsers(
+        dest="mission_command",
+        required=True,
+    )
+    mission_list = mission_commands.add_parser("list", help="List missions")
+    mission_list.add_argument("--json", action="store_true", dest="json_output")
+    mission_start = mission_commands.add_parser("start", help="Start a mission")
+    mission_start.add_argument("mission", help="Mission identifier")
+    mission_commands.add_parser("brief", help="Show the active mission brief")
+    mission_commands.add_parser("status", help="Show active mission progress")
+    mission_commands.add_parser("hint", help="Request the next progressive hint")
+    mission_commands.add_parser("submit", help="Submit findings for scoring")
+    mission_commands.add_parser("reset", help="Reset the active mission session")
 
     commands.add_parser(
         "firewall",
@@ -798,6 +847,8 @@ def main() -> int:
         if args.schedule_command == "status":
             return show_schedule_status()
         return remove_schedule()
+    elif args.command == "mission":
+        return run_mission_command(args)
     else:
         parser.print_help()
 
