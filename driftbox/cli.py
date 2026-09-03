@@ -739,14 +739,23 @@ def format_network_discovery(report: dict[str, object]) -> str:
     if not isinstance(hosts, list) or not isinstance(limitations, list):
         raise ValueError("Discovery report host or limitation data are malformed.")
 
+    host_address_count = int(target["host_address_count"])
+    probe_address_count = int(target["probe_address_count"])
+    response_count = int(summary.get("responses_received", 0))
+    host_address_label = (
+        "host address" if host_address_count == 1 else "host addresses"
+    )
+    probe_label = "remote probe" if probe_address_count == 1 else "remote probes"
+    response_label = "reply" if response_count == 1 else "replies"
+
     lines = [
         "driftbox :: authorized private-network discovery",
         "Authorization: scan only networks you own or have explicit permission to inspect.",
         "Method: bounded, unprivileged ICMP echo plus local neighbor/cache evidence.",
         (
             f"Target: {target['cidr']} ({target['address_count']} addresses; "
-            f"{target['host_address_count']} host addresses; "
-            f"{target['probe_address_count']} remote probes)"
+            f"{host_address_count} {host_address_label}; "
+            f"{probe_address_count} {probe_label})"
         ),
         (
             f"Parameters: timeout {settings['timeout_seconds']} seconds; "
@@ -793,7 +802,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
             ),
             (
                 f"Probe summary: {summary.get('addresses_probed', 0)} attempted; "
-                f"{summary.get('responses_received', 0)} replies; "
+                f"{response_count} {response_label}; "
                 f"{summary.get('no_response_observed', 0)} without an observed reply; "
                 f"{summary.get('probe_timeouts', 0)} timed out; "
                 f"{summary.get('probe_unavailable', 0)} unavailable; "

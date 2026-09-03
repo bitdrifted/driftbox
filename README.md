@@ -108,7 +108,7 @@ ADDRESS         CLASSIFICATION          EVIDENCE
 192.168.50.3    locally known neighbor  neighbor/cache entry (source: ARP cache, MAC: 00:11:22:33:44:55, state: dynamic)
 
 Evidence summary: 3 host(s) recorded (1 local machine, 1 confirmed responsive, 1 locally known neighbor).
-Probe summary: 5 attempted; 1 replies; 4 without an observed reply; 0 timed out; 0 unavailable; 0 errors.
+Probe summary: 5 attempted; 1 reply; 4 without an observed reply; 0 timed out; 0 unavailable; 0 errors.
 Neighbor/cache evidence: available.
 Hostnames: not collected (unavailable metadata; reverse DNS is disabled).
 Silence is inconclusive and never means that a host does not exist.
