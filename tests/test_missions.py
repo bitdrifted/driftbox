@@ -4,6 +4,7 @@ import io
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from driftbox.cli import main
 from driftbox.mission_commands import (
     TRAINING_BANNER,
+    collect_submission,
     record_submission,
     show_mission_brief,
     show_mission_list,
@@ -108,6 +110,14 @@ class MissionDefinitionTests(unittest.TestCase):
             self.assertIn(field, mission)
         self.assertEqual(mission["organization"]["name"], "St. Meridian Medical Center")
         self.assertTrue(mission["organization"]["fictional"])
+        expected = mission["expected_findings"]
+        self.assertEqual(
+            [item["priority_tier"] for item in expected], [1, 2, 2, 3]
+        )
+        self.assertEqual(
+            expected[-1]["acceptable_actions"],
+            ["verify-expected", "no-action"],
+        )
 
     def test_malformed_and_unsupported_definitions_are_rejected(self) -> None:
         unsupported = get_mission_definition("first-watch")
@@ -128,6 +138,20 @@ class MissionDefinitionTests(unittest.TestCase):
     def test_unknown_mission_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown mission"):
             load_mission("not-a-mission")
+
+    def test_legacy_definition_shape_remains_compatible(self) -> None:
+        legacy = deepcopy(get_mission_definition("first-watch"))
+        legacy["schema_version"] = 1
+        for priority, finding in enumerate(legacy["expected_findings"], start=1):
+            finding["priority"] = priority
+            finding["action"] = finding.pop("preferred_action")
+            finding.pop("priority_tier")
+            finding.pop("acceptable_actions")
+
+        validated = validate_mission_definition(legacy)
+        score = score_submission(validated, perfect_submission(), hint_count=0)
+
+        self.assertEqual(score.total, 100)
 
 
 class MissionStorageTests(unittest.TestCase):
@@ -276,6 +300,95 @@ class MissionScoringTests(unittest.TestCase):
         self.assertEqual(one_hint.total, 97)
         self.assertEqual(many_hints.total, 91)
 
+    def test_equivalent_middle_priority_orders_receive_full_credit(self) -> None:
+        submission = perfect_submission()
+        reordered = MissionSubmission(
+            submission.selected_evidence,
+            submission.classifications,
+            submission.actions,
+            ("EV-001", "EV-003", "EV-002", "EV-004"),
+        )
+
+        score = score_submission(self.mission, reordered, hint_count=0)
+
+        self.assertEqual(score.components["prioritization"], 20)
+        self.assertEqual(score.total, 100)
+        self.assertNotIn(
+            "revisit", " ".join(item.message.lower() for item in score.coaching)
+        )
+
+    def test_highest_and_last_priority_tiers_are_enforced(self) -> None:
+        submission = perfect_submission()
+        reordered = MissionSubmission(
+            submission.selected_evidence,
+            submission.classifications,
+            submission.actions,
+            ("EV-002", "EV-001", "EV-004", "EV-003"),
+        )
+
+        score = score_submission(self.mission, reordered, hint_count=0)
+
+        self.assertLess(score.components["prioritization"], 20)
+        self.assertIn(
+            "No prioritization points were awarded",
+            " ".join(item.message for item in score.coaching),
+        )
+
+    def test_normal_item_accepts_both_actions_for_full_credit(self) -> None:
+        preferred = score_submission(
+            self.mission, perfect_submission(), hint_count=0
+        )
+        submission = perfect_submission()
+        alternative = MissionSubmission(
+            submission.selected_evidence,
+            submission.classifications,
+            {**submission.actions, "EV-004": "no-action"},
+            submission.priority,
+        )
+        alternative_score = score_submission(
+            self.mission, alternative, hint_count=0
+        )
+
+        self.assertEqual(preferred.total, 100)
+        self.assertEqual(alternative_score.total, 100)
+        coaching = {
+            (item.evidence_id, item.category): item.message
+            for item in alternative_score.coaching
+        }
+        self.assertIn(("EV-004", "acceptable-alternative"), coaching)
+        self.assertIn("full-credit", coaching[("EV-004", "acceptable-alternative")])
+        self.assertIn("more cautious", coaching[("EV-004", "acceptable-alternative")])
+
+    def test_preferred_actions_receive_explicit_coaching(self) -> None:
+        score = score_submission(self.mission, perfect_submission(), hint_count=0)
+        preferred = [
+            item for item in score.coaching if item.category == "preferred-action"
+        ]
+
+        self.assertEqual(
+            [item.evidence_id for item in preferred],
+            ["EV-001", "EV-002", "EV-003", "EV-004"],
+        )
+
+    def test_score_json_explains_points_lost(self) -> None:
+        submission = perfect_submission()
+        wrong_action = MissionSubmission(
+            submission.selected_evidence,
+            submission.classifications,
+            {**submission.actions, "EV-001": "no-action"},
+            submission.priority,
+        )
+
+        data = score_submission(self.mission, wrong_action, hint_count=0).as_dict()
+
+        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["points_lost"]["response"], 6)
+        self.assertEqual(data["maximums"]["response"], 24)
+        self.assertIn(
+            "No response points were awarded",
+            " ".join(item["message"] for item in data["coaching"]),
+        )
+
     def test_missed_findings_and_response_decisions_are_coached(self) -> None:
         submission = MissionSubmission(
             ("EV-001",),
@@ -420,6 +533,124 @@ class MissionCommandTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Total score: 0/100", output.getvalue())
+
+    def test_numbered_menus_collect_a_complete_submission(self) -> None:
+        answers = iter(
+            [
+                "1,2,3,4\r\n",
+                "3\r\n",
+                "1\r\n",
+                "2\n",
+                "2\n",
+                "2",
+                "3",
+                "1",
+                "4",
+                "1,3,2,4\r\n",
+            ]
+        )
+        output = []
+
+        submission = collect_submission(
+            self.mission_definition(),
+            input_func=lambda _prompt: next(answers),
+            output_func=output.append,
+        )
+
+        self.assertEqual(submission, MissionSubmission(
+            ("EV-001", "EV-002", "EV-003", "EV-004"),
+            {
+                "EV-001": "critical",
+                "EV-002": "suspicious",
+                "EV-003": "suspicious",
+                "EV-004": "normal",
+            },
+            {
+                "EV-001": "restore-firewall",
+                "EV-002": "validate-service-controls",
+                "EV-003": "investigate-restore",
+                "EV-004": "verify-expected",
+            },
+            ("EV-001", "EV-003", "EV-002", "EV-004"),
+        ))
+        visible = "\n".join(output)
+        self.assertIn("1. normal -", visible)
+        self.assertIn("1. restore-firewall -", visible)
+        self.assertIn("EV-003 - Integrity telemetry", visible)
+
+    def test_textual_ids_remain_accepted(self) -> None:
+        answers = iter(
+            [
+                "ev-004",
+                "NORMAL",
+                "no-action",
+                "EV-004",
+            ]
+        )
+
+        submission = collect_submission(
+            self.mission_definition(),
+            input_func=lambda _prompt: next(answers),
+            output_func=lambda _line: None,
+        )
+
+        self.assertEqual(submission.selected_evidence, ("EV-004",))
+        self.assertEqual(submission.classifications["EV-004"], "normal")
+        self.assertEqual(submission.actions["EV-004"], "no-action")
+
+    def test_invalid_interactive_input_is_reprompted(self) -> None:
+        answers = iter(
+            [
+                "9",
+                "1",
+                "not-a-classification",
+                "3",
+                "not-an-action",
+                "restore-firewall",
+                "2",
+                "EV-001",
+            ]
+        )
+        output = []
+
+        submission = collect_submission(
+            self.mission_definition(),
+            input_func=lambda _prompt: next(answers),
+            output_func=output.append,
+        )
+
+        self.assertEqual(submission.selected_evidence, ("EV-001",))
+        self.assertEqual(submission.priority, ("EV-001",))
+        self.assertGreaterEqual("\n".join(output).count("Invalid"), 4)
+
+    @staticmethod
+    def mission_definition() -> dict[str, object]:
+        """Return a validated definition for isolated prompt tests."""
+        return load_mission("first-watch")
+
+    def test_existing_version_one_session_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict("os.environ", {"DRIFTBOX_MISSION_DIR": directory}):
+                session, _ = start_session(load_mission("first-watch"))
+                session["attempts"] = [
+                    {
+                        "attempt": 1,
+                        "submitted_at": "2030-04-12T08:45:00+00:00",
+                        "submission": {
+                            "selected_evidence": [],
+                            "classifications": {},
+                            "actions": {},
+                            "priority": [],
+                        },
+                        "score": {"schema_version": 1, "total": 84},
+                    }
+                ]
+                session["best_score"] = 84
+                save_session(session)
+                loaded = load_active_session()
+
+        self.assertEqual(loaded["best_score"], 84)
+        self.assertEqual(loaded["attempts"][0]["score"]["schema_version"], 1)
 
     def test_invalid_input_and_missing_session_exit_two(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

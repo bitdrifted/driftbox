@@ -364,6 +364,13 @@ driftbox mission submit
 driftbox mission reset
 ```
 
+The submission flow displays numbered evidence, classification, response, and
+priority menus when each answer is requested. Enter a menu number or the stable
+textual ID; both forms work on PowerShell, Windows Terminal, macOS, Linux, and
+WSL. Invalid entries are explained and re-prompted without discarding the
+attempt. The priority menu repeats every selected evidence ID and description,
+so learners do not need to memorize the brief.
+
 Every learner-facing result carries a permanent training indicator. The mission
 uses only fictional reports, hostnames, addresses, processes, files, and
 organization data. It never inspects or changes the real firewall, listeners,
@@ -373,8 +380,17 @@ posture, and unified findings engines.
 
 Submission scoring separately measures identification, classification,
 prioritization, and response decisions for a total of 0-100. Coaching is
-deterministic and rule-based, not AI-generated. A disabled firewall is critical;
-a new all-interface listener and an integrity change are suspicious. An
+deterministic and rule-based, not AI-generated. Priority tiers allow equally
+defensible ordering: First Watch requires EV-001 first and EV-004 last, while
+EV-002 and EV-003 receive full credit in either order. Scenario definitions can
+also distinguish a preferred action from reasonable full-credit alternatives.
+For normal EV-004, both `verify-expected` and `no-action` receive full credit;
+coaching identifies `verify-expected` as the more cautious operational choice.
+Score output states the points lost in each component and never asks learners
+to revisit a fully accepted answer.
+
+A disabled firewall is critical; a new all-interface listener and an integrity
+change are suspicious. An
 all-interface listener may be reachable from other networks, but its binding
 alone does not prove internet accessibility because firewall policy, routing,
 and NAT also affect reachability. Volatile background changes such as a process

@@ -121,29 +121,170 @@ def show_next_hint() -> None:
     print(f"Hints used: {session['hint_count']}")
 
 
-def _parse_ids(text: str) -> tuple[str, ...]:
-    if not text.strip():
-        return ()
-    return tuple(item.strip().upper() for item in text.split(",") if item.strip())
+CLASSIFICATION_CHOICES = (
+    ("normal", "Expected or harmless activity that does not require escalation."),
+    ("suspicious", "Activity that warrants investigation or validation."),
+    ("critical", "A confirmed serious security condition requiring priority action."),
+)
 
 
-def collect_submission() -> MissionSubmission:
-    """Collect one clear interactive finding and response submission."""
-    selected = _parse_ids(
-        input("Evidence IDs to submit (comma-separated, blank for none): ")
+def _show_numbered_menu(
+    heading: str,
+    choices: list[tuple[str, str]],
+    output_func,
+) -> None:
+    """Display portable numbered choices with their stable textual IDs."""
+    output_func(heading)
+    for number, (identifier, description) in enumerate(choices, start=1):
+        output_func(f"  {number}. {identifier} - {description}")
+
+
+def _resolve_menu_entry(text: str, choices: list[str]) -> str | None:
+    token = text.strip()
+    if token.isdigit():
+        number = int(token)
+        if 1 <= number <= len(choices):
+            return choices[number - 1]
+        return None
+    aliases = {choice.casefold(): choice for choice in choices}
+    return aliases.get(token.casefold())
+
+
+def _prompt_choice(prompt: str, choices: list[str], input_func, output_func) -> str:
+    """Read one numbered or textual choice, re-prompting invalid input."""
+    while True:
+        resolved = _resolve_menu_entry(input_func(prompt), choices)
+        if resolved is not None:
+            return resolved
+        output_func(
+            f"Invalid choice. Enter a number from 1 to {len(choices)} "
+            "or one of the displayed IDs."
+        )
+
+
+def _prompt_order(
+    prompt: str,
+    choices: list[str],
+    input_func,
+    output_func,
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, ...]:
+    """Read a complete comma-separated menu order without terminal assumptions."""
+    while True:
+        text = input_func(prompt)
+        if allow_empty and not text.strip():
+            return ()
+        tokens = [token.strip() for token in text.split(",") if token.strip()]
+        resolved = [_resolve_menu_entry(token, choices) for token in tokens]
+        if (
+            len(tokens) == len(choices)
+            and all(item is not None for item in resolved)
+            and len(set(resolved)) == len(choices)
+        ):
+            return tuple(item for item in resolved if item is not None)
+        output_func(
+            "Invalid entry. Include each displayed item exactly once, separated "
+            "by commas; use menu numbers or IDs."
+        )
+
+
+def _prompt_selection(
+    prompt: str, choices: list[str], input_func, output_func
+) -> tuple[str, ...]:
+    """Read any unique subset of a menu, including an intentionally empty set."""
+    while True:
+        text = input_func(prompt)
+        if not text.strip():
+            return ()
+        tokens = [token.strip() for token in text.split(",") if token.strip()]
+        resolved = [_resolve_menu_entry(token, choices) for token in tokens]
+        if (
+            tokens
+            and all(item is not None for item in resolved)
+            and len(set(resolved)) == len(resolved)
+        ):
+            return tuple(item for item in resolved if item is not None)
+        output_func(
+            "Invalid entry. Use each desired menu number or evidence ID at most "
+            "once, separated by commas."
+        )
+
+
+def collect_submission(
+    mission: dict[str, object] | None = None,
+    input_func=None,
+    output_func=None,
+) -> MissionSubmission:
+    """Collect an interactive submission while preserving the data interface."""
+    if input_func is None:
+        input_func = input
+    if output_func is None:
+        output_func = print
+    if mission is None:
+        mission = load_mission(active_mission_id())
+    evidence = mission["evidence"]
+    if not isinstance(evidence, dict):
+        raise ValueError("mission evidence is invalid")
+    evidence_items = evidence["items"]
+    action_items = evidence["action_choices"]
+    if not isinstance(evidence_items, list) or not isinstance(action_items, list):
+        raise ValueError("mission choices are invalid")
+    evidence_choices = [
+        (item["id"], f"{item['title']}: {item['details']}")
+        for item in evidence_items
+    ]
+    _show_numbered_menu(
+        "Evidence available for submission:", evidence_choices, output_func
+    )
+    selected = _prompt_selection(
+        "Evidence to submit (comma-separated numbers or IDs; blank for none): ",
+        [identifier for identifier, _ in evidence_choices],
+        input_func,
+        output_func,
     )
     classifications = {}
     actions = {}
+    classification_choices = list(CLASSIFICATION_CHOICES)
+    action_choices = [
+        (item["id"], item["description"])
+        for item in action_items
+    ]
     for evidence_id in selected:
-        classifications[evidence_id] = input(
-            f"Classification for {evidence_id} "
-            "[normal/suspicious/critical]: "
-        ).strip().lower()
-        actions[evidence_id] = input(
-            f"Recommended action ID for {evidence_id}: "
-        ).strip().lower()
-    priority = _parse_ids(
-        input("Priority order, highest first (comma-separated): ")
+        _show_numbered_menu(
+            f"Classification choices for {evidence_id}:",
+            classification_choices,
+            output_func,
+        )
+        classifications[evidence_id] = _prompt_choice(
+            f"Classification for {evidence_id}: ",
+            [identifier for identifier, _ in classification_choices],
+            input_func,
+            output_func,
+        )
+        _show_numbered_menu(
+            f"Recommended actions for {evidence_id}:", action_choices, output_func
+        )
+        actions[evidence_id] = _prompt_choice(
+            f"Recommended action for {evidence_id}: ",
+            [identifier for identifier, _ in action_choices],
+            input_func,
+            output_func,
+        )
+    selected_details = [
+        choice for choice in evidence_choices if choice[0] in set(selected)
+    ]
+    _show_numbered_menu(
+        "Priority choices (highest priority first):",
+        selected_details,
+        output_func,
+    )
+    priority = _prompt_order(
+        "Priority order (comma-separated numbers or evidence IDs): ",
+        [identifier for identifier, _ in selected_details],
+        input_func,
+        output_func,
+        allow_empty=not selected,
     )
     return MissionSubmission(selected, classifications, actions, priority)
 
@@ -180,21 +321,25 @@ def record_submission(
 
 def submit_mission() -> None:
     """Run the interactive submission, scoring, and coaching loop."""
-    active_mission_id()
+    mission = load_mission(active_mission_id())
     _print_banner()
     print("Submit evidence, classifications, actions, and a priority order.")
-    print(
-        "Action IDs are listed by 'driftbox mission brief'. "
-        "Coaching is deterministic and rule-based, not AI-generated."
-    )
-    submission = collect_submission()
+    print("Choices are shown as they are needed; enter a menu number or its ID.")
+    print("Coaching is deterministic and rule-based, not AI-generated.")
+    submission = collect_submission(mission)
     score, attempt_number, best_score = record_submission(submission)
     print()
     print(f"Attempt: {attempt_number}")
-    print(f"Identification: {score.components['identification']}/28")
-    print(f"Classification: {score.components['classification']}/28")
-    print(f"Prioritization: {score.components['prioritization']}/20")
-    print(f"Response decisions: {score.components['response']}/24")
+    labels = (
+        ("identification", "Identification"),
+        ("classification", "Classification"),
+        ("prioritization", "Prioritization"),
+        ("response", "Response decisions"),
+    )
+    for key, label in labels:
+        earned = score.components[key]
+        maximum = score.maximums[key]
+        print(f"{label}: {earned}/{maximum} ({maximum - earned} points lost)")
     print(f"Hint penalty: -{score.hint_penalty}")
     print(f"Total score: {score.total}/100")
     print(f"Best score: {best_score}/100")
