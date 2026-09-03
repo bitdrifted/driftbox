@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,8 +96,18 @@ def normalize_report(report: object) -> ReportSnapshot:
 
 def load_baseline(path: str) -> ReportSnapshot:
     """Read and validate a baseline report from disk."""
-    with Path(path).open(encoding="utf-8-sig") as baseline_file:
-        return normalize_report(json.load(baseline_file))
+    baseline_bytes = Path(path).read_bytes()
+
+    # Windows PowerShell may redirect native command output as UTF-16. Only use
+    # UTF-16 when its byte-order marker identifies the encoding unambiguously.
+    if baseline_bytes.startswith(codecs.BOM_UTF8):
+        encoding = "utf-8-sig"
+    elif baseline_bytes.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        encoding = "utf-16"
+    else:
+        encoding = "utf-8"
+
+    return normalize_report(json.loads(baseline_bytes.decode(encoding)))
 
 
 def compare_snapshots(

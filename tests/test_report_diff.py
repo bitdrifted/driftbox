@@ -49,9 +49,18 @@ class ReportDiffTests(unittest.TestCase):
         current: dict[str, object],
     ) -> tuple[int, str, str]:
         """Write a baseline and invoke the command implementation."""
+        baseline_bytes = json.dumps(baseline).encode("utf-8")
+        return self.run_diff_bytes(baseline_bytes, current)
+
+    def run_diff_bytes(
+        self,
+        baseline_bytes: bytes,
+        current: dict[str, object],
+    ) -> tuple[int, str, str]:
+        """Write baseline bytes and invoke the command implementation."""
         with tempfile.TemporaryDirectory() as directory:
             baseline_path = Path(directory) / "baseline.json"
-            baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+            baseline_path.write_bytes(baseline_bytes)
             output = io.StringIO()
             errors = io.StringIO()
 
@@ -64,7 +73,7 @@ class ReportDiffTests(unittest.TestCase):
 
         return exit_code, output.getvalue(), errors.getvalue()
 
-    def test_no_drift_ignores_timestamp_and_pid(self) -> None:
+    def test_normal_utf8_baseline_ignores_timestamp_and_pid(self) -> None:
         baseline = report([listener(8080, pid=100)])
         current = report(
             [listener(8080, pid=999)],
@@ -72,6 +81,45 @@ class ReportDiffTests(unittest.TestCase):
         )
 
         exit_code, output, errors = self.run_diff(baseline, current)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("No drift detected.", output)
+        self.assertEqual(errors, "")
+
+    def test_utf8_bom_baseline(self) -> None:
+        baseline = report([listener(8080)])
+        baseline_bytes = json.dumps(baseline).encode("utf-8-sig")
+
+        exit_code, output, errors = self.run_diff_bytes(
+            baseline_bytes,
+            baseline,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("No drift detected.", output)
+        self.assertEqual(errors, "")
+
+    def test_utf16_little_endian_bom_baseline(self) -> None:
+        baseline = report([listener(8080)])
+        baseline_bytes = json.dumps(baseline).encode("utf-16")
+
+        exit_code, output, errors = self.run_diff_bytes(
+            baseline_bytes,
+            baseline,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("No drift detected.", output)
+        self.assertEqual(errors, "")
+
+    def test_utf16_big_endian_bom_baseline(self) -> None:
+        baseline = report([listener(8080)])
+        baseline_bytes = b"\xfe\xff" + json.dumps(baseline).encode("utf-16-be")
+
+        exit_code, output, errors = self.run_diff_bytes(
+            baseline_bytes,
+            baseline,
+        )
 
         self.assertEqual(exit_code, 0)
         self.assertIn("No drift detected.", output)
@@ -126,6 +174,13 @@ class ReportDiffTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertEqual(output.getvalue(), "")
         self.assertIn("invalid baseline", errors.getvalue())
+
+    def test_invalid_encoding_returns_exit_code_two(self) -> None:
+        exit_code, output, errors = self.run_diff_bytes(b"\x80\x81", report())
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("invalid baseline", errors)
 
     def test_unreadable_baseline_returns_exit_code_two(self) -> None:
         output = io.StringIO()
