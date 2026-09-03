@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-MISSION_DEFINITION_SCHEMA_VERSION = 1
+MISSION_DEFINITION_SCHEMA_VERSION = 2
 
 _BASELINE_REPORT = {
     "schema_version": 1,
@@ -207,8 +207,9 @@ _FIRST_WATCH = {
             "id": "first-watch-firewall-disabled",
             "evidence_id": "EV-001",
             "classification": "critical",
-            "priority": 1,
-            "action": "restore-firewall",
+            "priority_tier": 1,
+            "preferred_action": "restore-firewall",
+            "acceptable_actions": ["restore-firewall"],
             "source_finding_ids": [
                 "firewall-currently-disabled",
                 "firewall-regressed-to-disabled",
@@ -218,8 +219,9 @@ _FIRST_WATCH = {
             "id": "first-watch-new-listener",
             "evidence_id": "EV-002",
             "classification": "suspicious",
-            "priority": 2,
-            "action": "validate-service-controls",
+            "priority_tier": 2,
+            "preferred_action": "validate-service-controls",
+            "acceptable_actions": ["validate-service-controls"],
             "source_finding_ids": [
                 "listener-all-interfaces",
                 "listener-newly-detected",
@@ -229,16 +231,18 @@ _FIRST_WATCH = {
             "id": "first-watch-integrity-modified",
             "evidence_id": "EV-003",
             "classification": "suspicious",
-            "priority": 3,
-            "action": "investigate-restore",
+            "priority_tier": 2,
+            "preferred_action": "investigate-restore",
+            "acceptable_actions": ["investigate-restore"],
             "source_finding_ids": ["integrity-file-modified"],
         },
         {
             "id": "first-watch-routine-pid-change",
             "evidence_id": "EV-004",
             "classification": "normal",
-            "priority": 4,
-            "action": "verify-expected",
+            "priority_tier": 3,
+            "preferred_action": "verify-expected",
+            "acceptable_actions": ["verify-expected", "no-action"],
             "source_finding_ids": [],
         },
     ],

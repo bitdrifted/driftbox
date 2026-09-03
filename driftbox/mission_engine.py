@@ -22,6 +22,7 @@ from driftbox.security_checks import analyze_security_posture
 
 MISSION_LIST_SCHEMA_VERSION = 1
 TRAINING_DATA_SOURCE = "synthetic"
+SUPPORTED_MISSION_DEFINITION_SCHEMA_VERSIONS = (1, MISSION_DEFINITION_SCHEMA_VERSION)
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,9 @@ def _require_text(value: object, field: str) -> str:
 def validate_mission_definition(definition: object) -> dict[str, object]:
     """Validate the complete private mission model and its synthetic evidence."""
     mission = _require_mapping(definition, "definition")
-    if mission.get("schema_version") != MISSION_DEFINITION_SCHEMA_VERSION:
+    if mission.get("schema_version") not in (
+        SUPPORTED_MISSION_DEFINITION_SCHEMA_VERSIONS
+    ):
         raise ValueError("unsupported mission definition schema version")
     for field in ("id", "title", "difficulty", "learner_role", "brief"):
         _require_text(mission.get(field), field)
@@ -100,7 +103,7 @@ def validate_mission_definition(definition: object) -> dict[str, object]:
         raise ValueError("mission expected_findings must be a non-empty array")
     expected_evidence_ids = []
     expected_ids = []
-    priorities = []
+    priority_tiers = []
     for finding in expected:
         finding_data = _require_mapping(finding, "expected finding")
         expected_ids.append(
@@ -116,14 +119,37 @@ def validate_mission_definition(definition: object) -> dict[str, object]:
             "critical",
         ):
             raise ValueError("expected finding has an invalid classification")
-        priority = finding_data.get("priority")
-        if isinstance(priority, bool) or not isinstance(priority, int):
-            raise ValueError("expected finding priority must be an integer")
-        priorities.append(priority)
-        action = _require_text(
-            finding_data.get("action"), "expected finding action"
+        # Version 1 definitions used one rigid priority and action. Continue to
+        # accept that shape so older mission definitions remain loadable.
+        priority_tier = finding_data.get(
+            "priority_tier", finding_data.get("priority")
         )
-        if action not in action_ids:
+        if (
+            isinstance(priority_tier, bool)
+            or not isinstance(priority_tier, int)
+            or priority_tier < 1
+        ):
+            raise ValueError(
+                "expected finding priority tier must be a positive integer"
+            )
+        priority_tiers.append(priority_tier)
+        preferred_action = _require_text(
+            finding_data.get("preferred_action", finding_data.get("action")),
+            "expected finding preferred action",
+        )
+        acceptable_actions = finding_data.get(
+            "acceptable_actions", [preferred_action]
+        )
+        if (
+            not isinstance(acceptable_actions, list)
+            or not acceptable_actions
+            or not all(isinstance(action, str) for action in acceptable_actions)
+        ):
+            raise ValueError("acceptable_actions must be a non-empty array of strings")
+        if preferred_action not in acceptable_actions:
+            raise ValueError("preferred action must also be acceptable")
+        unknown_actions = sorted(set(acceptable_actions) - set(action_ids))
+        if unknown_actions:
             raise ValueError("expected finding uses an unknown action")
         source_ids = finding_data.get("source_finding_ids")
         if not isinstance(source_ids, list) or not all(
@@ -134,10 +160,10 @@ def validate_mission_definition(definition: object) -> dict[str, object]:
         raise ValueError("every evidence item must have one expected finding")
     if len(expected_ids) != len(set(expected_ids)):
         raise ValueError("expected finding IDs must be unique")
-    if priorities != list(range(1, len(expected) + 1)):
-        raise ValueError(
-            "expected finding priorities must be consecutive and ordered"
-        )
+    if priority_tiers != sorted(priority_tiers):
+        raise ValueError("expected finding priority tiers must be ordered")
+    if sorted(set(priority_tiers)) != list(range(1, max(priority_tiers) + 1)):
+        raise ValueError("expected finding priority tiers must be consecutive")
 
     rules = _require_mapping(mission.get("scoring_rules"), "scoring_rules")
     point_keys = (
