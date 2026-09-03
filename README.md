@@ -29,6 +29,18 @@ Inspect services accepting network traffic:
 ```bash
 driftbox ports
 ```
+## Firewall inspection
+
+Inspect the local firewall status without changing its configuration:
+
+```bash
+driftbox firewall
+```
+
+Driftbox supports Microsoft Defender Firewall on Windows, UFW or firewalld
+on Linux, and the Application Firewall on macOS. If the status cannot be
+confirmed, Driftbox reports it as `unknown` instead of guessing.
+
 ## portable reports
 
 Display a report in the terminal:
