@@ -12,7 +12,18 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, persistent configuration, configured scanning, safe scan scheduling, an experimental synthetic training mission, automated tests, and cross-platform validation are operational.
+System inspection, authorized private-network discovery, listening-port inspection,
+portable JSON reports, persistent report history, report drift detection,
+file-integrity verification, unified findings, security posture checks, persistent
+configuration, configured scanning, safe scan scheduling, an experimental
+synthetic training mission, automated tests, and cross-platform validation are
+operational.
+
+Driftbox's core product direction is operational security learning: real,
+authorized host and network inspection, vulnerability discovery, tool guidance,
+safe validation, remediation, and learning through operation. Synthetic
+quiz-style training remains experimental rather than defining the product's
+direction.
 
 ## current commands
 
@@ -20,6 +31,8 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 |---|---|
 | `driftbox info` | Display system and execution-environment information |
 | `driftbox network` | Display local network information |
+| `driftbox discover [CIDR]` | Discover evidence of hosts on one authorized private IPv4 network |
+| `driftbox discover [CIDR] --json` | Produce a schema-versioned discovery result for later inventory |
 | `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
 | `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
@@ -48,6 +61,106 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox mission hint` | Request the next progressive hint |
 | `driftbox mission submit` | Submit decisions for scoring and coaching |
 | `driftbox mission reset` | Reset only the active mission workspace |
+
+## authorized private-network discovery
+
+Use discovery only on a network you own or have explicit permission to inspect.
+Authorization is the operator's responsibility. Driftbox accepts one canonical,
+numeric IPv4 CIDR and only permits loopback (`127.0.0.0/8`), link-local
+(`169.254.0.0/16`), and RFC 1918 private space (`10.0.0.0/8`,
+`172.16.0.0/12`, and `192.168.0.0/16`). Public, mixed private/public, IPv6,
+non-canonical, and hostname targets are rejected. Hostnames are not resolved,
+which prevents a name from silently expanding discovery beyond the reviewed
+numeric target.
+
+Discover a specifically authorized network:
+
+```bash
+driftbox discover 192.168.50.0/29
+```
+
+If the CIDR is omitted, Driftbox inspects local interface configuration for
+suitable private IPv4 candidates. Exactly one candidate is selected
+automatically. When several candidates exist, Driftbox lists them and exits
+without probing so the operator can make an explicit choice. When none is
+available, discovery cannot proceed.
+
+```bash
+driftbox discover
+driftbox discover 192.168.50.0/29 --timeout 0.5 --workers 8
+driftbox discover 192.168.50.0/29 --json > discovery.json
+```
+
+An illustrative human-readable result is:
+
+```text
+driftbox :: authorized private-network discovery
+Authorization: scan only networks you own or have explicit permission to inspect.
+Method: bounded, unprivileged ICMP echo plus local neighbor/cache evidence.
+Target: 192.168.50.0/29 (8 addresses; 6 host addresses; 5 remote probes)
+Parameters: timeout 0.75 seconds; workers 16
+Collection status: completed
+
+ADDRESS         CLASSIFICATION          EVIDENCE
+--------------- ----------------------- --------------------------------
+192.168.50.1    local machine           local interface address (source: local interface data)
+192.168.50.2    confirmed responsive    ICMP echo reply (source: system ping)
+192.168.50.3    locally known neighbor  neighbor/cache entry (source: ARP cache, MAC: 00:11:22:33:44:55, state: dynamic)
+
+Evidence summary: 3 host(s) recorded (1 local machine, 1 confirmed responsive, 1 locally known neighbor).
+Probe summary: 5 attempted; 1 reply; 4 without an observed reply; 0 timed out; 0 unavailable; 0 errors.
+Neighbor/cache evidence: available.
+Hostnames: not collected (unavailable metadata; reverse DNS is disabled).
+Silence is inconclusive and never means that a host does not exist.
+Limitations:
+- Only ICMP echo replies, local interface data, and existing neighbor-cache records are considered.
+- A silent or timed-out address may still have a host; no absence claim is made.
+- Hostnames are not resolved, and ports and vulnerabilities are not scanned.
+Privacy: review this private network inventory before storing or sharing it.
+Next safe step: verify ownership and record expected devices and changes; discovery does not authorize port scanning.
+```
+
+Discovery uses short, unprivileged ICMP echo commands and reads the operating
+system's local neighbor cache. It does not require administrator privileges or
+raw sockets. Results distinguish the local machine, a confirmed responsive host
+with direct probe evidence, and a locally known neighbor/cache entry. A cache
+entry is historical local evidence, not proof that a device is currently online.
+A silent target may block ICMP, be asleep, or be absent; Driftbox never claims
+that silence proves a host does not exist. Reverse DNS is intentionally skipped,
+so hostnames remain optional, unavailable metadata rather than introducing
+unpredictable delays or disclosing addresses to a DNS service.
+
+The conservative defaults are 16 workers and 0.75 seconds per probe. Driftbox
+constrains `--workers` to 1 through 32 and `--timeout` to 0.1 through 2.0
+seconds; values beyond those limits are safely clamped. Driftbox refuses targets
+larger than 256 total addresses. Work is bounded and output is sorted by numeric
+address, but operating-system scheduling means overall run time can still vary.
+
+`--json` writes the same result as schema-versioned JSON. The top-level fields
+are `schema_version`, `generated_at`, `collection_status`, `target`, `settings`,
+`authorization`, `summary`, `neighbor_cache`, `sources`, `hosts`, and
+`limitations`. They are intended as a stable starting point for future service
+inventory and vulnerability analysis. `collection_status` is `completed` when
+the evidence sources completed, `partial` when at least one safe source worked,
+and `unavailable` when none could operate. Each host retains its classification
+and supporting evidence; consumers should not infer liveness from missing
+entries. Discovery data contains private addresses, interface details, MAC
+addresses when the operating system exposes them, and other local network
+evidence. Protect it and review it before storing or sharing it.
+
+Discovery has stable exit codes:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Discovery completed or collected partial evidence, including zero recorded hosts |
+| `2` | The target or parameters were invalid, unsafe, or outside the allowed scope |
+| `3` | Multiple suitable local networks require explicit selection; no probes ran |
+| `4` | No suitable local network was found, or discovery could not operate |
+
+This first version does not perform port scanning, service detection, CVE
+lookup, Nmap integration, exploitation, credential attacks, stealth,
+persistence, evasion, or attack-tool execution. Tests mock interface, command,
+timeout, and cache behavior; automated validation does not probe a real network.
 
 ## port exposure
 
@@ -426,7 +539,15 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## planned capabilities
 
+- Authorized service inventory and vulnerability-analysis guidance built on
+  reviewed discovery evidence
 - Optional report redaction
+
+## repository boundary
+
+`C:\Users\cjboo\driftbox-platform` is a frozen, read-only, separate private
+platform repository. Public Driftbox development does not modify it or copy its
+private code into this repository.
 
 ## operating principles
 

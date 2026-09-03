@@ -44,6 +44,22 @@ from driftbox.mission_commands import (
     start_mission,
     submit_mission,
 )
+from driftbox.network_discovery import (
+    CandidateSelectionRequired,
+    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_WORKERS,
+    DiscoveryOperationalError,
+    MAX_TIMEOUT_SECONDS,
+    MAX_WORKERS,
+    MIN_TIMEOUT_SECONDS,
+    MIN_WORKERS,
+    NoSuitableNetworkError,
+    SCHEMA_VERSION as DISCOVERY_SCHEMA_VERSION,
+    TargetValidationError,
+    detect_local_network_candidates,
+    discover_network,
+    resolve_target,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -662,6 +678,251 @@ def run_mission_command(args: argparse.Namespace) -> int:
     return 0
 
 
+_DISCOVERY_STATUS_LABELS = {
+    "local_machine": "local machine",
+    "confirmed_responsive": "confirmed responsive",
+    "known_neighbor": "locally known neighbor",
+}
+
+_DISCOVERY_EVIDENCE_LABELS = {
+    "local_interface_address": "local interface address",
+    "icmp_echo_reply": "ICMP echo reply",
+    "neighbor_cache": "neighbor/cache entry",
+}
+
+_DISCOVERY_SOURCE_LABELS = {
+    "psutil_interface_data": "local interface data",
+    "system_ping": "system ping",
+    "ip_neighbor_cache": "IP neighbor cache",
+    "arp_cache": "ARP cache",
+}
+
+
+def _format_discovery_evidence(evidence: object) -> str:
+    """Format one host's evidence without overstating what it proves."""
+    if not isinstance(evidence, list):
+        return "evidence metadata unavailable"
+
+    labels: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind", "unavailable"))
+        label = _DISCOVERY_EVIDENCE_LABELS.get(kind, kind.replace("_", " "))
+        details: list[str] = []
+        if item.get("source") is not None:
+            source = str(item["source"])
+            details.append(f"source: {_DISCOVERY_SOURCE_LABELS.get(source, source)}")
+        if item.get("mac_address") is not None:
+            details.append(f"MAC: {item['mac_address']}")
+        if item.get("state") is not None:
+            details.append(f"state: {item['state']}")
+        if details:
+            label = f"{label} ({', '.join(details)})"
+        labels.append(label)
+    return "; ".join(labels) or "evidence metadata unavailable"
+
+
+def format_network_discovery(report: dict[str, object]) -> str:
+    """Return a deterministic, learner-friendly discovery report."""
+    target = report["target"]
+    settings = report["settings"]
+    summary = report["summary"]
+    neighbor_cache = report["neighbor_cache"]
+    hosts = report["hosts"]
+    limitations = report["limitations"]
+
+    if not isinstance(target, dict) or not isinstance(settings, dict):
+        raise ValueError("Discovery report target or settings are malformed.")
+    if not isinstance(summary, dict) or not isinstance(neighbor_cache, dict):
+        raise ValueError("Discovery report summary is malformed.")
+    if not isinstance(hosts, list) or not isinstance(limitations, list):
+        raise ValueError("Discovery report host or limitation data are malformed.")
+
+    host_address_count = int(target["host_address_count"])
+    probe_address_count = int(target["probe_address_count"])
+    response_count = int(summary.get("responses_received", 0))
+    host_address_label = (
+        "host address" if host_address_count == 1 else "host addresses"
+    )
+    probe_label = "remote probe" if probe_address_count == 1 else "remote probes"
+    response_label = "reply" if response_count == 1 else "replies"
+
+    lines = [
+        "driftbox :: authorized private-network discovery",
+        "Authorization: scan only networks you own or have explicit permission to inspect.",
+        "Method: bounded, unprivileged ICMP echo plus local neighbor/cache evidence.",
+        (
+            f"Target: {target['cidr']} ({target['address_count']} addresses; "
+            f"{host_address_count} {host_address_label}; "
+            f"{probe_address_count} {probe_label})"
+        ),
+        (
+            f"Parameters: timeout {settings['timeout_seconds']} seconds; "
+            f"workers {settings['workers']}"
+        ),
+        f"Collection status: {report.get('collection_status', 'unavailable')}",
+        "",
+    ]
+
+    if hosts:
+        lines.extend(
+            [
+                f"{'ADDRESS':<15} {'CLASSIFICATION':<23} EVIDENCE",
+                f"{'-' * 15} {'-' * 23} {'-' * 32}",
+            ]
+        )
+        for host in hosts:
+            if not isinstance(host, dict):
+                continue
+            address = str(host.get("address", "unavailable"))
+            status = str(host.get("status", "unavailable"))
+            classification = _DISCOVERY_STATUS_LABELS.get(
+                status, status.replace("_", " ")
+            )
+            lines.append(
+                f"{address:<15} {classification:<23} "
+                f"{_format_discovery_evidence(host.get('evidence'))}"
+            )
+    else:
+        lines.append("No positive host evidence was collected.")
+
+    total_hosts = sum(
+        int(summary.get(key, 0))
+        for key in ("local_machine", "confirmed_responsive", "known_neighbor")
+    )
+    lines.extend(
+        [
+            "",
+            (
+                f"Evidence summary: {total_hosts} host(s) recorded "
+                f"({summary.get('local_machine', 0)} local machine, "
+                f"{summary.get('confirmed_responsive', 0)} confirmed responsive, "
+                f"{summary.get('known_neighbor', 0)} locally known neighbor)."
+            ),
+            (
+                f"Probe summary: {summary.get('addresses_probed', 0)} attempted; "
+                f"{response_count} {response_label}; "
+                f"{summary.get('no_response_observed', 0)} without an observed reply; "
+                f"{summary.get('probe_timeouts', 0)} timed out; "
+                f"{summary.get('probe_unavailable', 0)} unavailable; "
+                f"{summary.get('probe_errors', 0)} errors."
+            ),
+            (
+                "Neighbor/cache evidence: "
+                f"{neighbor_cache.get('status', 'unavailable')}"
+                + (
+                    f" ({neighbor_cache['detail']})"
+                    if neighbor_cache.get("detail")
+                    else ""
+                )
+                + "."
+            ),
+            "Hostnames: not collected (unavailable metadata; reverse DNS is disabled).",
+            "Silence is inconclusive and never means that a host does not exist.",
+            "Limitations:",
+            *(f"- {item}" for item in limitations),
+            "Privacy: review this private network inventory before storing or sharing it.",
+            (
+                "Next safe step: verify ownership and record expected devices and "
+                "changes; discovery does not authorize port scanning."
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _show_discovery_error(
+    status: str,
+    message: str,
+    *,
+    json_output: bool,
+    candidates: list[dict[str, object]] | None = None,
+    probes_started: bool | None = False,
+) -> None:
+    """Show a discovery error in the selected output format."""
+    if json_output:
+        payload: dict[str, object] = {
+            "schema_version": DISCOVERY_SCHEMA_VERSION,
+            "status": status,
+            "message": message,
+        }
+        if probes_started is not None:
+            payload["probes_started"] = probes_started
+        if candidates is not None:
+            payload["candidates"] = candidates
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    print(f"driftbox: discover: {message}", file=sys.stderr)
+    if candidates:
+        print("Suitable candidates (no probes were started):", file=sys.stderr)
+        for candidate in candidates:
+            interfaces = ", ".join(candidate["interfaces"]) or "unavailable"
+            local_addresses = ", ".join(candidate["local_addresses"]) or "unavailable"
+            print(
+                f"  {candidate['cidr']}  interfaces: {interfaces}; "
+                f"local addresses: {local_addresses}",
+                file=sys.stderr,
+            )
+        print(
+            "Choose one explicitly, for example: driftbox discover CIDR",
+            file=sys.stderr,
+        )
+
+
+def run_network_discovery(
+    cidr: str | None = None,
+    *,
+    json_output: bool = False,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    workers: int = DEFAULT_WORKERS,
+) -> int:
+    """Safely resolve, run, and present authorized network discovery."""
+    try:
+        candidates = detect_local_network_candidates() if cidr is None else None
+        target = resolve_target(cidr, candidates=candidates)
+        report = discover_network(
+            target,
+            timeout_seconds=timeout_seconds,
+            workers=workers,
+        )
+    except TargetValidationError as error:
+        _show_discovery_error("invalid_request", str(error), json_output=json_output)
+        return 2
+    except CandidateSelectionRequired as error:
+        candidate_data = [candidate.as_dict() for candidate in error.candidates]
+        _show_discovery_error(
+            "selection_required",
+            str(error),
+            json_output=json_output,
+            candidates=candidate_data,
+        )
+        return 3
+    except (NoSuitableNetworkError, DiscoveryOperationalError) as error:
+        _show_discovery_error("unavailable", str(error), json_output=json_output)
+        return 4
+    except Exception as error:
+        _show_discovery_error(
+            "unavailable",
+            f"Discovery could not operate safely: {error}",
+            json_output=json_output,
+            probes_started=None,
+        )
+        return 4
+
+    try:
+        if json_output:
+            output = json.dumps(report, indent=2, sort_keys=True)
+        else:
+            output = format_network_discovery(report)
+        print(output)
+        return 4 if report.get("collection_status") == "unavailable" else 0
+    except Exception as error:
+        _show_command_error("discover output", error)
+        return 4
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -677,6 +938,48 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("info", help="Display system and environment information")
     commands.add_parser("network", help="Display local network information")
+    discover_parser = commands.add_parser(
+        "discover",
+        help="Discover host evidence on an authorized private IPv4 network",
+        description=(
+            "Use bounded, unprivileged host discovery only on a private IPv4 "
+            "network you own or have explicit permission to inspect."
+        ),
+    )
+    discover_parser.add_argument(
+        "cidr",
+        nargs="?",
+        metavar="CIDR",
+        help=(
+            "Canonical private IPv4 CIDR; omit to detect safe local candidates"
+        ),
+    )
+    discover_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Write a schema-versioned machine-readable discovery result",
+    )
+    discover_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            f"Per-command timeout, safely bounded to {MIN_TIMEOUT_SECONDS}-"
+            f"{MAX_TIMEOUT_SECONDS} seconds (default: {DEFAULT_TIMEOUT_SECONDS})"
+        ),
+    )
+    discover_parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        metavar="N",
+        help=(
+            f"Concurrent probe workers, safely bounded to {MIN_WORKERS}-"
+            f"{MAX_WORKERS} (default: {DEFAULT_WORKERS})"
+        ),
+    )
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
     check_parser = commands.add_parser(
@@ -809,6 +1112,13 @@ def main() -> int:
         show_system_info()
     elif args.command == "network":
         show_network_info()
+    elif args.command == "discover":
+        return run_network_discovery(
+            args.cidr,
+            json_output=args.json_output,
+            timeout_seconds=args.timeout,
+            workers=args.workers,
+        )
     elif args.command == "ports":
         show_listening_ports()
     elif args.command == "firewall":
