@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, persistent configuration, configured scanning, safe scan scheduling, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, persistent configuration, configured scanning, safe scan scheduling, an experimental synthetic training mission, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -41,6 +41,13 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox schedule install --daily HH:MM [--dry-run]` | Install or preview a daily per-user scan |
 | `driftbox schedule status` | Show scheduled-scan state |
 | `driftbox schedule remove` | Remove Driftbox's scheduled scan |
+| `driftbox mission list [--json]` | List synthetic training missions |
+| `driftbox mission start first-watch` | Start or resume the first mission |
+| `driftbox mission brief` | Review the active mission and evidence |
+| `driftbox mission status` | Show hints, attempts, and best score |
+| `driftbox mission hint` | Request the next progressive hint |
+| `driftbox mission submit` | Submit decisions for scoring and coaching |
+| `driftbox mission reset` | Reset only the active mission workspace |
 
 ## port exposure
 
@@ -323,6 +330,72 @@ marker before replacement or removal; unrelated tasks and crontab entries are
 preserved. Malformed, unsupported, invalid, or operational scheduler errors
 return status `2`. Installation and removal do not require administrator access
 where the platform permits per-user scheduling.
+
+## experimental training: First Watch
+
+The local training engine is experimental. Its first playable mission,
+`first-watch`, places the learner at the fictional St. Meridian Medical Center
+and demonstrates this complete loop:
+
+```text
+mission brief -> evidence investigation -> finding submission -> scoring -> coaching
+```
+
+List missions and start or resume First Watch:
+
+```bash
+driftbox mission list
+driftbox mission list --json
+driftbox mission start first-watch
+```
+
+Investigate the synthetic evidence and track progress:
+
+```bash
+driftbox mission brief
+driftbox mission status
+driftbox mission hint
+```
+
+Submit findings interactively, then reset only the mission when desired:
+
+```bash
+driftbox mission submit
+driftbox mission reset
+```
+
+Every learner-facing result carries a permanent training indicator. The mission
+uses only fictional reports, hostnames, addresses, processes, files, and
+organization data. It never inspects or changes the real firewall, listeners,
+services, files, scheduler, Driftbox configuration, or report history. The
+synthetic evidence is analyzed by Driftbox's existing report-diff, integrity,
+posture, and unified findings engines.
+
+Submission scoring separately measures identification, classification,
+prioritization, and response decisions for a total of 0-100. Coaching is
+deterministic and rule-based, not AI-generated. A disabled firewall is critical;
+a new all-interface listener and an integrity change are suspicious. An
+all-interface listener may be reachable from other networks, but its binding
+alone does not prove internet accessibility because firewall policy, routing,
+and NAT also affect reachability. Volatile background changes such as a process
+ID change remain normal when the meaningful endpoint is unchanged.
+
+Hints are progressive, tracked in the session, and apply a modest score penalty.
+Attempts and the best score persist so a learner can leave and resume. Mission
+commands return `0` after successful operations, including a completed
+submission regardless of score, and `2` for malformed data, invalid input,
+missing sessions, or operational errors.
+
+Mission state is isolated from other Driftbox data in these locations:
+
+- Windows: `%LOCALAPPDATA%\Driftbox\missions`
+- macOS: `~/Library/Application Support/Driftbox/missions`
+- Linux and WSL: `${XDG_STATE_HOME:-~/.local/state}/driftbox/missions`
+
+Set `DRIFTBOX_MISSION_DIR` to an isolated mission directory for a lab, test, or
+future cyber-range instance. See
+[`docs/training-architecture.md`](docs/training-architecture.md) for the
+prototype boundaries and future migration path.
 
 ## compatibility
 
