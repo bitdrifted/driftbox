@@ -10,6 +10,11 @@ import sys
 from datetime import datetime, timezone
 import psutil
 
+from driftbox.configuration import (
+    load_configuration,
+    reset_configuration,
+    set_configuration_value,
+)
 from driftbox.firewall import collect_firewall_info
 from driftbox.findings import (
     combine_findings,
@@ -37,6 +42,8 @@ from driftbox.report_diff import (
     normalize_report,
 )
 from driftbox.security_checks import analyze_security_posture
+from driftbox.scan_runner import run_scan
+from driftbox.scheduler import scheduler_for_platform
 
 from driftbox import __version__
 
@@ -502,6 +509,127 @@ def diff_history_snapshot(identifier: str) -> int:
     return 1 if drift.found else 0
 
 
+def _show_command_error(command: str, error: Exception) -> None:
+    """Write a consistent operational error without masking output failures."""
+    try:
+        print(f"driftbox: {command} failed: {error}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def show_configuration(json_output: bool = False) -> int:
+    """Display the validated configuration, creating defaults if needed."""
+    try:
+        configuration = load_configuration()
+        if json_output:
+            output = json.dumps(configuration, indent=2, sort_keys=True)
+        else:
+            settings = configuration["settings"]
+            output = "\n".join(
+                [
+                    "driftbox :: configuration",
+                    "-" * 32,
+                    f"schema_version: {configuration['schema_version']}",
+                    *(
+                        f"{key}: {json.dumps(value, sort_keys=True)}"
+                        for key, value in sorted(settings.items())
+                    ),
+                ]
+            )
+        print(output)
+    except Exception as error:
+        _show_command_error("config show", error)
+        return 2
+    return 0
+
+
+def set_configuration(key: str, value: str) -> int:
+    """Set one validated configuration value."""
+    try:
+        configuration = set_configuration_value(key, value)
+        print(
+            f"Updated {key}: "
+            f"{json.dumps(configuration['settings'][key], sort_keys=True)}"
+        )
+    except Exception as error:
+        _show_command_error("config set", error)
+        return 2
+    return 0
+
+
+def reset_configuration_command() -> int:
+    """Reset the saved configuration to Driftbox defaults."""
+    try:
+        reset_configuration()
+        print("Driftbox configuration reset to defaults.")
+    except Exception as error:
+        _show_command_error("config reset", error)
+        return 2
+    return 0
+
+
+def run_configured_scan(json_output: bool = False) -> int:
+    """Run a configured report, posture, integrity, and history scan."""
+    try:
+        configuration = load_configuration()
+        result = run_scan(build_report, configuration)
+        settings = configuration["settings"]
+        use_json = json_output or settings["scan_output"] == "json"
+        if use_json:
+            output = json.dumps(result.as_dict(), indent=2, sort_keys=True)
+        else:
+            previous = result.previous_snapshot or "none (baseline initialized)"
+            output = "\n".join(
+                [
+                    format_findings(result.findings, "configured scan"),
+                    "",
+                    f"Previous snapshot: {previous}",
+                    f"Captured snapshot: {result.captured_snapshot.identifier}",
+                ]
+            )
+        print(output)
+    except Exception as error:
+        _show_command_error("scan", error)
+        return 2
+    return 1 if result.findings.actionable else 0
+
+
+def install_schedule(daily_time: str, dry_run: bool = False) -> int:
+    """Install or preview the platform's per-user daily scan schedule."""
+    try:
+        result = scheduler_for_platform().install(daily_time, dry_run)
+        print(f"Schedule state: {result.state}")
+        print(result.message)
+    except Exception as error:
+        _show_command_error("schedule install", error)
+        return 2
+    return 2 if result.state == "unsupported" else 0
+
+
+def show_schedule_status() -> int:
+    """Display installed, absent, unsupported, or malformed schedule state."""
+    try:
+        result = scheduler_for_platform().status()
+        print(f"Schedule state: {result.state}")
+        print(result.message)
+    except Exception as error:
+        _show_command_error("schedule status", error)
+        return 2
+    return 2 if result.state in ("malformed", "unsupported") else 0
+
+
+def remove_schedule() -> int:
+    """Remove only Driftbox's owned scheduled scan."""
+    try:
+        result = scheduler_for_platform().remove()
+        print(f"Schedule state: {result.state}")
+        print(result.message)
+    except Exception as error:
+        _show_command_error("schedule remove", error)
+        return 2
+    return 2 if result.state == "unsupported" else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -580,6 +708,41 @@ def build_parser() -> argparse.ArgumentParser:
     integrity_verify.add_argument("path", help="Regular file or directory to scan")
     integrity_verify.add_argument("manifest", help="Integrity manifest to verify")
 
+    config_parser = commands.add_parser(
+        "config",
+        help="Show or update persistent per-user configuration",
+    )
+    config_commands = config_parser.add_subparsers(
+        dest="config_command",
+        required=True,
+    )
+    config_show = config_commands.add_parser("show", help="Show configuration")
+    config_show.add_argument("--json", action="store_true", dest="json_output")
+    config_set = config_commands.add_parser("set", help="Set one configuration value")
+    config_set.add_argument("key", help="Configuration key")
+    config_set.add_argument("value", help="Configuration value")
+    config_commands.add_parser("reset", help="Reset configuration to defaults")
+    scan_parser = commands.add_parser(
+        "scan",
+        help="Run configured analysis and capture the report to history",
+    )
+    scan_parser.add_argument("--json", action="store_true", dest="json_output")
+    schedule_parser = commands.add_parser(
+        "schedule",
+        help="Manage a per-user scheduled Driftbox scan",
+    )
+    schedule_commands = schedule_parser.add_subparsers(
+        dest="schedule_command",
+        required=True,
+    )
+    schedule_install = schedule_commands.add_parser(
+        "install", help="Install a daily scheduled scan"
+    )
+    schedule_install.add_argument("--daily", required=True, metavar="HH:MM")
+    schedule_install.add_argument("--dry-run", action="store_true")
+    schedule_commands.add_parser("status", help="Show scheduled scan status")
+    schedule_commands.add_parser("remove", help="Remove the scheduled scan")
+
     commands.add_parser(
         "firewall",
         help="inspect local firewall status",
@@ -621,6 +784,20 @@ def main() -> int:
         if args.history_command == "show":
             return show_history_snapshot(args.snapshot)
         return diff_history_snapshot(args.snapshot)
+    elif args.command == "config":
+        if args.config_command == "show":
+            return show_configuration(args.json_output)
+        if args.config_command == "set":
+            return set_configuration(args.key, args.value)
+        return reset_configuration_command()
+    elif args.command == "scan":
+        return run_configured_scan(args.json_output)
+    elif args.command == "schedule":
+        if args.schedule_command == "install":
+            return install_schedule(args.daily, args.dry_run)
+        if args.schedule_command == "status":
+            return show_schedule_status()
+        return remove_schedule()
     else:
         parser.print_help()
 
