@@ -11,6 +11,13 @@ from datetime import datetime, timezone
 import psutil
 
 from driftbox.firewall import collect_firewall_info
+from driftbox.integrity import (
+    compare_integrity,
+    create_manifest,
+    format_integrity_changes,
+    load_manifest,
+    scan_path,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -323,6 +330,31 @@ def show_report_diff(baseline_path: str) -> int:
     return 1 if drift.found else 0
 
 
+def create_integrity_manifest(path: str, output_path: str) -> int:
+    """Create a file-integrity manifest and return a command exit code."""
+    try:
+        file_count = create_manifest(path, output_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"driftbox: integrity create failed: {error}", file=sys.stderr)
+        return 2
+    print(f"Created integrity manifest: {output_path}")
+    print(f"Files recorded: {file_count}")
+    return 0
+
+
+def verify_integrity(path: str, manifest_path: str) -> int:
+    """Verify a path against an integrity manifest and return an exit code."""
+    try:
+        baseline = load_manifest(manifest_path)
+        current = scan_path(path, excluded_path=manifest_path)
+        changes = compare_integrity(baseline, current)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"driftbox: integrity verify failed: {error}", file=sys.stderr)
+        return 2
+    print(format_integrity_changes(changes))
+    return 1 if changes.found else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -345,6 +377,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compare the current report with a saved baseline",
     )
     diff_parser.add_argument("baseline", help="Path to a baseline JSON report")
+    integrity_parser = commands.add_parser(
+        "integrity",
+        help="Create or verify SHA-256 file-integrity manifests",
+    )
+    integrity_commands = integrity_parser.add_subparsers(
+        dest="integrity_command",
+        required=True,
+    )
+    integrity_create = integrity_commands.add_parser("create")
+    integrity_create.add_argument("path", help="Regular file or directory to scan")
+    integrity_create.add_argument("--output", required=True)
+    integrity_verify = integrity_commands.add_parser("verify")
+    integrity_verify.add_argument("path", help="Regular file or directory to scan")
+    integrity_verify.add_argument("manifest", help="Integrity manifest to verify")
 
     commands.add_parser(
         "firewall",
@@ -371,6 +417,10 @@ def main() -> int:
         show_report()
     elif args.command == "diff":
         return show_report_diff(args.baseline)
+    elif args.command == "integrity":
+        if args.integrity_command == "create":
+            return create_integrity_manifest(args.path, args.output)
+        return verify_integrity(args.path, args.manifest)
     else:
         parser.print_help()
 

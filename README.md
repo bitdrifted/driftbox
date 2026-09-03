@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, report drift detection, file-integrity verification, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -24,6 +24,8 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
 | `driftbox diff baseline.json` | Compare current security-relevant state with a saved report |
+| `driftbox integrity create PATH --output MANIFEST.json` | Create a SHA-256 file-integrity manifest |
+| `driftbox integrity verify PATH MANIFEST.json` | Verify files against an integrity manifest |
 ## port exposure
 
 Inspect services accepting network traffic:
@@ -88,6 +90,31 @@ The command exits with status `0` when no drift is detected, `1` when drift is
 detected, and `2` when the baseline cannot be read or is not a valid Driftbox
 report.
 
+## file-integrity verification
+
+Create a SHA-256 manifest for one regular file or an entire directory tree:
+
+```bash
+driftbox integrity create PATH --output MANIFEST.json
+```
+
+Verify the current files against that manifest:
+
+```bash
+driftbox integrity verify PATH MANIFEST.json
+```
+
+Manifests contain normalized relative paths, file sizes, and SHA-256 hashes in
+deterministic order. Directory scans are recursive and do not follow symbolic
+links. A manifest stored inside the scanned directory excludes itself from both
+creation and verification.
+
+Verification reports added, missing, modified, and unchanged files. It exits
+with status `0` when integrity is intact, `1` when changes are detected, and `2`
+for invalid manifests, unsupported versions, missing or unreadable paths, and
+permission errors. Driftbox fails instead of writing or checking a partial
+manifest if any regular file cannot be read.
+
 ## compatibility
 
 | Environment | Status |
@@ -101,7 +128,6 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## planned capabilities
 
-- File-integrity verification
 - Security configuration checks
 - Optional report redaction
 
