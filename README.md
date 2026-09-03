@@ -69,6 +69,10 @@ Create a baseline from the system's current state:
 driftbox report > baseline.json
 ```
 
+This command works directly in PowerShell as well as other supported shells.
+Driftbox accepts UTF-8 baselines (with or without a byte-order marker) and the
+BOM-marked UTF-16 output produced by Windows PowerShell redirection.
+
 Later, compare a fresh report with that baseline:
 
 ```bash
