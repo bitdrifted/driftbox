@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, report drift detection, file-integrity verification, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, report drift detection, file-integrity verification, security posture checks, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -26,6 +26,8 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox diff baseline.json` | Compare current security-relevant state with a saved report |
 | `driftbox integrity create PATH --output MANIFEST.json` | Create a SHA-256 file-integrity manifest |
 | `driftbox integrity verify PATH MANIFEST.json` | Verify files against an integrity manifest |
+| `driftbox check` | Analyze firewall and listening-port security posture |
+| `driftbox check --json` | Produce a machine-readable security posture result |
 ## port exposure
 
 Inspect services accepting network traffic:
@@ -115,6 +117,31 @@ for invalid manifests, unsupported versions, missing or unreadable paths, and
 permission errors. Driftbox fails instead of writing or checking a partial
 manifest if any regular file cannot be read.
 
+## security posture checks
+
+Analyze existing firewall and listening-port inspection data:
+
+```bash
+driftbox check
+```
+
+Produce a versioned JSON result for automation:
+
+```bash
+driftbox check --json
+```
+
+Driftbox reports a high-severity finding when the firewall is confirmed disabled
+and a warning when firewall status is unknown. Unknown status is never treated as
+secure. Services listening on all interfaces or bound to a public address produce
+warnings; local-only, link-local, and private-network bindings do not produce
+findings solely because of their scope.
+
+A broad or public binding does not by itself prove that a service is accessible
+from the internet. Firewall policy, routing, and NAT can all affect reachability.
+The command exits with status `0` when no warning or high-severity findings exist,
+`1` when findings exist, and `2` after an unexpected inspection or output error.
+
 ## compatibility
 
 | Environment | Status |
@@ -128,7 +155,6 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## planned capabilities
 
-- Security configuration checks
 - Optional report redaction
 
 ## operating principles
