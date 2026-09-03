@@ -182,6 +182,7 @@ def build_report() -> dict[str, object]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "system": collect_system_info(),
         "network": collect_network_info(),
+        "firewall": collect_firewall_info(),
         "exposure": {
             "listening_ports": collect_listening_ports(),
         },

@@ -21,6 +21,7 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox info` | Display system and execution-environment information |
 | `driftbox network` | Display local network information |
 | `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
+| `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
 ## port exposure
 
@@ -55,7 +56,7 @@ Save it to a file:
 driftbox report > driftbox-report.json
 ```
 
-Reports include system details, local network addresses, listening ports, process information, exposure classifications, the Driftbox version, and a UTC generation timestamp.
+Reports include system details, local network addresses, firewall status, listening ports, process information, exposure classifications, the Driftbox version, and a UTC generation timestamp. Firewall inspection results appear under the top-level `firewall` key.
 
 Review reports before sharing them because they may contain hostnames, local addresses, process names, process IDs, and other system information.
 
