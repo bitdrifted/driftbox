@@ -18,6 +18,12 @@ from driftbox.integrity import (
     load_manifest,
     scan_path,
 )
+from driftbox.history import (
+    capture_snapshot,
+    list_snapshots,
+    read_snapshot,
+    snapshot_listing_data,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -379,6 +385,79 @@ def show_security_checks(json_output: bool = False) -> int:
     return 1 if result.findings else 0
 
 
+def _show_history_error(action: str, error: Exception) -> None:
+    """Write a history error when the error stream remains available."""
+    try:
+        print(f"driftbox: history {action} failed: {error}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def capture_history() -> int:
+    """Capture the current report in persistent local history."""
+    try:
+        snapshot = capture_snapshot(build_report())
+        print(f"Captured snapshot: {snapshot.identifier}")
+        print(f"Created at: {snapshot.created_at}")
+        print(f"Size: {snapshot.size} bytes")
+    except Exception as error:
+        _show_history_error("capture", error)
+        return 2
+    return 0
+
+
+def show_history_list(json_output: bool = False) -> int:
+    """List saved report snapshots newest first."""
+    try:
+        snapshots = list_snapshots()
+        if json_output:
+            output = json.dumps(
+                snapshot_listing_data(snapshots),
+                indent=2,
+                sort_keys=True,
+            )
+        else:
+            lines = ["driftbox :: report history", "-" * 32]
+            if snapshots:
+                lines.extend(
+                    f"{item.identifier}  {item.created_at}  {item.size} bytes"
+                    for item in snapshots
+                )
+            else:
+                lines.append("No snapshots captured.")
+            output = "\n".join(lines)
+        print(output)
+    except Exception as error:
+        _show_history_error("list", error)
+        return 2
+    return 0
+
+
+def show_history_snapshot(identifier: str) -> int:
+    """Write a stored snapshot without reformatting it."""
+    try:
+        snapshot_text, _ = read_snapshot(identifier)
+        sys.stdout.write(snapshot_text)
+    except Exception as error:
+        _show_history_error("show", error)
+        return 2
+    return 0
+
+
+def diff_history_snapshot(identifier: str) -> int:
+    """Compare the current report with a stored history snapshot."""
+    try:
+        _, baseline_report = read_snapshot(identifier)
+        baseline = normalize_report(baseline_report)
+        current = normalize_report(build_report())
+        drift = compare_snapshots(baseline, current)
+        print(format_drift(drift))
+    except Exception as error:
+        _show_history_error("diff", error)
+        return 2
+    return 1 if drift.found else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -406,6 +485,21 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Write a machine-readable JSON result",
     )
+    history_parser = commands.add_parser(
+        "history",
+        help="Capture and inspect persistent local report history",
+    )
+    history_commands = history_parser.add_subparsers(
+        dest="history_command",
+        required=True,
+    )
+    history_commands.add_parser("capture", help="Capture the current report")
+    history_list = history_commands.add_parser("list", help="List snapshots")
+    history_list.add_argument("--json", action="store_true", dest="json_output")
+    history_show = history_commands.add_parser("show", help="Show a snapshot")
+    history_show.add_argument("snapshot", help="Snapshot identifier or latest")
+    history_diff = history_commands.add_parser("diff", help="Compare a snapshot")
+    history_diff.add_argument("snapshot", help="Snapshot identifier or latest")
     diff_parser = commands.add_parser(
         "diff",
         help="Compare the current report with a saved baseline",
@@ -457,6 +551,14 @@ def main() -> int:
         return verify_integrity(args.path, args.manifest)
     elif args.command == "check":
         return show_security_checks(args.json_output)
+    elif args.command == "history":
+        if args.history_command == "capture":
+            return capture_history()
+        if args.history_command == "list":
+            return show_history_list(args.json_output)
+        if args.history_command == "show":
+            return show_history_snapshot(args.snapshot)
+        return diff_history_snapshot(args.snapshot)
     else:
         parser.print_help()
 
