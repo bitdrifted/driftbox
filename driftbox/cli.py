@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 import psutil
 
 from driftbox.firewall import collect_firewall_info
+from driftbox.report_diff import (
+    compare_snapshots,
+    format_drift,
+    load_baseline,
+    normalize_report,
+)
 
 from driftbox import __version__
 
@@ -300,6 +306,23 @@ def show_report() -> None:
     print(json.dumps(build_report(), indent=2, sort_keys=True))
 
 
+def show_report_diff(baseline_path: str) -> int:
+    """Compare the current report with a saved baseline and return an exit code."""
+    try:
+        baseline = load_baseline(baseline_path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(
+            f"driftbox: invalid baseline {baseline_path!r}: {error}",
+            file=sys.stderr,
+        )
+        return 2
+
+    current = normalize_report(build_report())
+    drift = compare_snapshots(baseline, current)
+    print(format_drift(drift))
+    return 1 if drift.found else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -317,6 +340,11 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("network", help="Display local network information")
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
+    diff_parser = commands.add_parser(
+        "diff",
+        help="Compare the current report with a saved baseline",
+    )
+    diff_parser.add_argument("baseline", help="Path to a baseline JSON report")
 
     commands.add_parser(
         "firewall",
@@ -326,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main() -> int:
     """Run Driftbox."""
     parser = build_parser()
     args = parser.parse_args()
@@ -341,9 +369,13 @@ def main() -> None:
         show_firewall_info()
     elif args.command == "report":
         show_report()
+    elif args.command == "diff":
+        return show_report_diff(args.baseline)
     else:
         parser.print_help()
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

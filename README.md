@@ -23,6 +23,7 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
 | `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
+| `driftbox diff baseline.json` | Compare current security-relevant state with a saved report |
 ## port exposure
 
 Inspect services accepting network traffic:
@@ -59,6 +60,29 @@ driftbox report > driftbox-report.json
 Reports include system details, local network addresses, firewall status, listening ports, process information, exposure classifications, the Driftbox version, and a UTC generation timestamp. Firewall inspection results appear under the top-level `firewall` key.
 
 Review reports before sharing them because they may contain hostnames, local addresses, process names, process IDs, and other system information.
+
+## report drift detection
+
+Create a baseline from the system's current state:
+
+```bash
+driftbox report > baseline.json
+```
+
+Later, compare a fresh report with that baseline:
+
+```bash
+driftbox diff baseline.json
+```
+
+Driftbox reports added and removed listening services or endpoints and firewall
+status changes. Listener comparisons include protocol, address, port, process,
+and interface scope. Volatile timestamps and process IDs are ignored, and output
+is sorted so repeated comparisons remain predictable.
+
+The command exits with status `0` when no drift is detected, `1` when drift is
+detected, and `2` when the baseline cannot be read or is not a valid Driftbox
+report.
 
 ## compatibility
 
