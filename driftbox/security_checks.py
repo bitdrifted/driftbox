@@ -9,8 +9,8 @@ CHECK_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
-class Finding:
-    """One deterministic security posture finding."""
+class PostureObservation:
+    """One raw rule match awaiting unified classification."""
 
     id: str
     severity: str
@@ -19,29 +19,31 @@ class Finding:
 
 
 @dataclass(frozen=True)
-class CheckResult:
-    """Versioned result of all security posture checks."""
+class SecurityPostureResult:
+    """Deterministically ordered raw security posture observations."""
 
-    findings: tuple[Finding, ...]
+    observations: tuple[PostureObservation, ...]
 
     def as_dict(self) -> dict[str, object]:
         """Return a machine-readable, versioned check result."""
-        high_count = sum(finding.severity == "high" for finding in self.findings)
+        high_count = sum(
+            observation.severity == "high" for observation in self.observations
+        )
         warning_count = sum(
-            finding.severity == "warning" for finding in self.findings
+            observation.severity == "warning" for observation in self.observations
         )
         return {
             "schema_version": CHECK_SCHEMA_VERSION,
             "summary": {
-                "total": len(self.findings),
+                "total": len(self.observations),
                 "high": high_count,
                 "warning": warning_count,
             },
-            "findings": [asdict(finding) for finding in self.findings],
+            "findings": [asdict(item) for item in self.observations],
         }
 
 
-def _firewall_finding(firewall: object) -> Finding | None:
+def _firewall_finding(firewall: object) -> PostureObservation | None:
     """Return a finding for disabled or indeterminate firewall status."""
     if not isinstance(firewall, dict):
         raise ValueError("firewall inspection result must be an object")
@@ -57,14 +59,14 @@ def _firewall_finding(firewall: object) -> Finding | None:
     }
 
     if status == "disabled":
-        return Finding(
+        return PostureObservation(
             id="firewall-disabled",
             severity="high",
             message="The local firewall is confirmed disabled.",
             evidence=evidence,
         )
     if status == "unknown":
-        return Finding(
+        return PostureObservation(
             id="firewall-unknown",
             severity="warning",
             message=(
@@ -76,7 +78,7 @@ def _firewall_finding(firewall: object) -> Finding | None:
     return None
 
 
-def _listener_finding(listener: object, index: int) -> Finding | None:
+def _listener_finding(listener: object, index: int) -> PostureObservation | None:
     """Return a finding for broadly exposed listener bindings."""
     if not isinstance(listener, dict):
         raise ValueError(f"listener {index} must be an object")
@@ -104,7 +106,7 @@ def _listener_finding(listener: object, index: int) -> Finding | None:
         "scope": scope,
     }
     if scope == "all interfaces":
-        return Finding(
+        return PostureObservation(
             id="listener-all-interfaces",
             severity="warning",
             message=(
@@ -114,7 +116,7 @@ def _listener_finding(listener: object, index: int) -> Finding | None:
             evidence=evidence,
         )
     if scope == "public address":
-        return Finding(
+        return PostureObservation(
             id="listener-public-address",
             severity="warning",
             message=(
@@ -130,32 +132,32 @@ def _listener_finding(listener: object, index: int) -> Finding | None:
 def analyze_security_posture(
     firewall: object,
     listening_ports: object,
-) -> CheckResult:
+) -> SecurityPostureResult:
     """Analyze existing inspection data without changing system configuration."""
     if not isinstance(listening_ports, list):
         raise ValueError("listening-port inspection result must be an array")
 
-    findings: list[Finding] = []
+    observations: list[PostureObservation] = []
     firewall_finding = _firewall_finding(firewall)
     if firewall_finding is not None:
-        findings.append(firewall_finding)
+        observations.append(firewall_finding)
 
     for index, listener in enumerate(listening_ports):
         finding = _listener_finding(listener, index)
         if finding is not None:
-            findings.append(finding)
+            observations.append(finding)
 
     # Serialized evidence provides a stable secondary key for repeated rule IDs.
-    findings.sort(
-        key=lambda finding: (
-            finding.id,
-            json.dumps(finding.evidence, sort_keys=True),
+    observations.sort(
+        key=lambda observation: (
+            observation.id,
+            json.dumps(observation.evidence, sort_keys=True),
         )
     )
-    return CheckResult(tuple(findings))
+    return SecurityPostureResult(tuple(observations))
 
 
-def format_check_result(result: CheckResult) -> str:
+def format_check_result(result: SecurityPostureResult) -> str:
     """Format security posture findings for terminal output."""
     data = result.as_dict()
     summary = data["summary"]
@@ -170,11 +172,11 @@ def format_check_result(result: CheckResult) -> str:
             f"{summary['warning']} warning, {summary['total']} total"
         ),
     ]
-    if not result.findings:
+    if not result.observations:
         lines.append("No warning or high-severity findings detected.")
         return "\n".join(lines)
 
-    for finding in result.findings:
+    for finding in result.observations:
         evidence = ", ".join(
             f"{key}={value}" for key, value in sorted(finding.evidence.items())
         )

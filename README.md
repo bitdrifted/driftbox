@@ -12,7 +12,7 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, security posture checks, automated tests, and cross-platform validation are operational.
+System inspection, network inspection, listening-port inspection, portable JSON reports, persistent report history, report drift detection, file-integrity verification, unified findings, security posture checks, automated tests, and cross-platform validation are operational.
 
 ## current commands
 
@@ -28,6 +28,8 @@ System inspection, network inspection, listening-port inspection, portable JSON 
 | `driftbox integrity verify PATH MANIFEST.json` | Verify files against an integrity manifest |
 | `driftbox check` | Analyze firewall and listening-port security posture |
 | `driftbox check --json` | Produce a machine-readable security posture result |
+| `driftbox analyze [SNAPSHOT]` | Combine snapshot drift with current security posture |
+| `driftbox analyze [SNAPSHOT] --json` | Produce versioned unified findings as JSON |
 | `driftbox history capture` | Save the current report in local history |
 | `driftbox history list [--json]` | List saved report snapshots newest first |
 | `driftbox history show SNAPSHOT` | Display a stored report snapshot |
@@ -115,11 +117,12 @@ deterministic order. Directory scans are recursive and do not follow symbolic
 links. A manifest stored inside the scanned directory excludes itself from both
 creation and verification.
 
-Verification reports added, missing, modified, and unchanged files. It exits
-with status `0` when integrity is intact, `1` when changes are detected, and `2`
-for invalid manifests, unsupported versions, missing or unreadable paths, and
-permission errors. Driftbox fails instead of writing or checking a partial
-manifest if any regular file cannot be read.
+Verification classifies added, missing, or modified monitored files as
+`suspicious` and an intact manifest as `normal`. It exits with status `0` when
+integrity is intact, `1` when changes are detected, and `2` for invalid
+manifests, unsupported versions, missing or unreadable paths, and permission
+errors. Driftbox fails instead of writing or checking a partial manifest if any
+regular file cannot be read.
 
 ## security posture checks
 
@@ -135,16 +138,50 @@ Produce a versioned JSON result for automation:
 driftbox check --json
 ```
 
-Driftbox reports a high-severity finding when the firewall is confirmed disabled
-and a warning when firewall status is unknown. Unknown status is never treated as
-secure. Services listening on all interfaces or bound to a public address produce
-warnings; local-only, link-local, and private-network bindings do not produce
-findings solely because of their scope.
+Driftbox reports a `critical` finding when the firewall is confirmed disabled
+and a `suspicious` finding when firewall status is unknown. Unknown status is
+never treated as secure. Services listening on all interfaces or bound to a
+public address are `suspicious`; local-only, link-local, and private-network
+bindings do not produce findings solely because of their scope.
 
 A broad or public binding does not by itself prove that a service is accessible
 from the internet. Firewall policy, routing, and NAT can all affect reachability.
-The command exits with status `0` when no warning or high-severity findings exist,
-`1` when findings exist, and `2` after an unexpected inspection or output error.
+The command exits with status `0` when only `normal` findings exist, `1` when a
+`suspicious` or `critical` finding exists, and `2` after an unexpected inspection
+or output error.
+
+## unified findings and analysis
+
+Analyze the current report against the latest history snapshot while also
+evaluating current security posture:
+
+```bash
+driftbox analyze
+```
+
+Select a specific snapshot or request versioned JSON output:
+
+```bash
+driftbox analyze SNAPSHOT
+driftbox analyze latest --json
+```
+
+Every finding contains a stable ID, one of the exact classifications `normal`,
+`suspicious`, or `critical`, a short title, a plain-language explanation,
+supporting evidence, and a practical recommended action. Results are sorted
+deterministically for reliable automation.
+
+An enabled-to-disabled firewall change and a currently disabled firewall are
+`critical`. Unknown firewall state, newly detected listeners, and public or
+all-interface listeners are `suspicious`. Removed listeners and firewall
+improvements are `normal`, with guidance to confirm that the change was expected.
+When no actionable drift or posture problem exists, the result is `normal`.
+
+A listener's bind address alone never proves internet accessibility. Firewall
+policy, routing, and NAT may change actual reachability. Analysis is entirely
+local and read-only. It exits with status `0` for only normal findings, `1` when
+any suspicious or critical finding exists, and `2` for invalid input, malformed
+data, unreadable files, or operational errors.
 
 ## persistent report history
 

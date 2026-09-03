@@ -41,23 +41,23 @@ class SecurityAnalysisTests(unittest.TestCase):
 
     def test_enabled_firewall_has_no_firewall_finding(self) -> None:
         result = analyze_security_posture(firewall("enabled"), [])
-        self.assertEqual(result.findings, ())
+        self.assertEqual(result.observations, ())
 
     def test_disabled_firewall_is_high_severity(self) -> None:
         result = analyze_security_posture(firewall("disabled"), [])
 
-        self.assertEqual(len(result.findings), 1)
-        self.assertEqual(result.findings[0].id, "firewall-disabled")
-        self.assertEqual(result.findings[0].severity, "high")
-        self.assertIn("confirmed disabled", result.findings[0].message)
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.observations[0].id, "firewall-disabled")
+        self.assertEqual(result.observations[0].severity, "high")
+        self.assertIn("confirmed disabled", result.observations[0].message)
 
     def test_unknown_firewall_is_not_treated_as_secure(self) -> None:
         result = analyze_security_posture(firewall("unknown"), [])
 
-        self.assertEqual(len(result.findings), 1)
-        self.assertEqual(result.findings[0].id, "firewall-unknown")
-        self.assertEqual(result.findings[0].severity, "warning")
-        self.assertIn("do not assume", result.findings[0].message)
+        self.assertEqual(len(result.observations), 1)
+        self.assertEqual(result.observations[0].id, "firewall-unknown")
+        self.assertEqual(result.observations[0].severity, "warning")
+        self.assertIn("do not assume", result.observations[0].message)
 
     def test_every_address_scope(self) -> None:
         cases = {
@@ -75,7 +75,7 @@ class SecurityAnalysisTests(unittest.TestCase):
                     firewall("enabled"),
                     [listener(scope)],
                 )
-                ids = [finding.id for finding in result.findings]
+                ids = [item.id for item in result.observations]
                 self.assertEqual(ids, [] if expected_id is None else [expected_id])
 
     def test_listener_wording_does_not_claim_internet_accessibility(self) -> None:
@@ -87,7 +87,7 @@ class SecurityAnalysisTests(unittest.TestCase):
             ],
         )
 
-        messages = " ".join(finding.message for finding in result.findings)
+        messages = " ".join(item.message for item in result.observations)
         self.assertIn("firewall policy, routing, and NAT", messages)
         self.assertIn("does not prove internet accessibility", messages)
         self.assertNotIn("is internet-accessible", messages)
@@ -108,14 +108,14 @@ class SecurityAnalysisTests(unittest.TestCase):
 
         self.assertEqual(forward.as_dict(), reverse.as_dict())
         self.assertEqual(
-            [finding.id for finding in forward.findings],
+            [item.id for item in forward.observations],
             [
                 "firewall-unknown",
                 "listener-all-interfaces",
                 "listener-all-interfaces",
             ],
         )
-        self.assertNotIn("pid", forward.findings[1].evidence)
+        self.assertNotIn("pid", forward.observations[1].evidence)
 
 
 class SecurityCommandTests(unittest.TestCase):
@@ -149,15 +149,16 @@ class SecurityCommandTests(unittest.TestCase):
         exit_code, output, errors = self.run_check("enabled")
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("Summary: 0 high, 0 warning, 0 total", output)
+        self.assertIn("Summary: 1 normal, 0 suspicious, 0 critical", output)
+        self.assertIn("[NORMAL] posture-no-actionable-findings", output)
         self.assertEqual(errors, "")
 
     def test_exit_one_with_findings(self) -> None:
         exit_code, output, _ = self.run_check("disabled")
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("[HIGH] firewall-disabled", output)
-        self.assertIn("Summary: 1 high, 0 warning, 1 total", output)
+        self.assertIn("[CRITICAL] firewall-currently-disabled", output)
+        self.assertIn("Summary: 0 normal, 0 suspicious, 1 critical", output)
 
     def test_json_output_is_versioned_and_machine_readable(self) -> None:
         exit_code, output, errors = self.run_check(
@@ -169,8 +170,9 @@ class SecurityCommandTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(data["schema_version"], 1)
-        self.assertEqual(data["summary"]["warning"], 1)
+        self.assertEqual(data["summary"]["suspicious"], 1)
         self.assertEqual(data["findings"][0]["id"], "listener-public-address")
+        self.assertEqual(data["findings"][0]["classification"], "suspicious")
         self.assertEqual(errors, "")
 
     @patch(
