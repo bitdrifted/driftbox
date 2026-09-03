@@ -252,6 +252,8 @@ def show_listening_ports() -> None:
             f"{str(pid):<7} "
             f"{item['process']}"
         )
+
+
 def show_firewall_info() -> None:
     """Display firewall status without changing its configuration."""
     firewall = collect_firewall_info()
@@ -320,7 +322,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="inspect local firewall status",
     )
 
-    return parser
     return parser
 
 
