@@ -44,8 +44,9 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(data["algorithm"], "sha256")
         self.assertEqual(data["root_type"], "file")
         self.assertEqual(exit_code, 0)
-        self.assertIn("Unchanged files: 1", output)
-        self.assertIn("Integrity intact.", output)
+        self.assertIn("Summary: 1 normal, 0 suspicious, 0 critical", output)
+        self.assertIn("[NORMAL] integrity-intact", output)
+        self.assertIn("unchanged_files=1", output)
         self.assertEqual(errors, "")
 
     def test_modified_file(self) -> None:
@@ -59,8 +60,8 @@ class IntegrityTests(unittest.TestCase):
             exit_code, output, _ = self.run_verify(root, manifest)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Modified files:", output)
-        self.assertIn("* settings.ini", output)
+        self.assertIn("[SUSPICIOUS] integrity-file-modified", output)
+        self.assertIn("path=settings.ini", output)
 
     def test_added_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -71,8 +72,8 @@ class IntegrityTests(unittest.TestCase):
             exit_code, output, _ = self.run_verify(root, manifest)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Added files:", output)
-        self.assertIn("+ new.txt", output)
+        self.assertIn("[SUSPICIOUS] integrity-file-added", output)
+        self.assertIn("path=new.txt", output)
 
     def test_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -85,8 +86,8 @@ class IntegrityTests(unittest.TestCase):
             exit_code, output, _ = self.run_verify(root, manifest)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Missing files:", output)
-        self.assertIn("- removed.txt", output)
+        self.assertIn("[SUSPICIOUS] integrity-file-missing", output)
+        self.assertIn("path=removed.txt", output)
 
     def test_directory_manifest_has_deterministic_normalized_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -148,7 +149,7 @@ class IntegrityTests(unittest.TestCase):
         paths = [record["path"] for record in data["files"]]
         self.assertNotIn("manifest.json", paths)
         self.assertEqual(exit_code, 0)
-        self.assertIn("Unchanged files: 1", output)
+        self.assertIn("unchanged_files=1", output)
 
     def test_malformed_manifest_returns_exit_code_two(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

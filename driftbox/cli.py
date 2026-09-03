@@ -11,10 +11,16 @@ from datetime import datetime, timezone
 import psutil
 
 from driftbox.firewall import collect_firewall_info
+from driftbox.findings import (
+    combine_findings,
+    drift_findings,
+    format_findings,
+    integrity_findings,
+    posture_findings,
+)
 from driftbox.integrity import (
     compare_integrity,
     create_manifest,
-    format_integrity_changes,
     load_manifest,
     scan_path,
 )
@@ -30,7 +36,7 @@ from driftbox.report_diff import (
     load_baseline,
     normalize_report,
 )
-from driftbox.security_checks import analyze_security_posture, format_check_result
+from driftbox.security_checks import analyze_security_posture
 
 from driftbox import __version__
 
@@ -355,24 +361,27 @@ def verify_integrity(path: str, manifest_path: str) -> int:
         baseline = load_manifest(manifest_path)
         current = scan_path(path, excluded_path=manifest_path)
         changes = compare_integrity(baseline, current)
+        findings = integrity_findings(changes)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"driftbox: integrity verify failed: {error}", file=sys.stderr)
         return 2
-    print(format_integrity_changes(changes))
-    return 1 if changes.found else 0
+    print(format_findings(findings, "file integrity"))
+    return 1 if findings.actionable else 0
 
 
 def show_security_checks(json_output: bool = False) -> int:
     """Analyze current inspection data and return a command exit code."""
     try:
-        result = analyze_security_posture(
-            collect_firewall_info(),
-            collect_listening_ports(),
+        result = posture_findings(
+            analyze_security_posture(
+                collect_firewall_info(),
+                collect_listening_ports(),
+            )
         )
         if json_output:
             output = json.dumps(result.as_dict(), indent=2, sort_keys=True)
         else:
-            output = format_check_result(result)
+            output = format_findings(result, "security posture")
         print(output)
     except Exception as error:
         try:
@@ -382,7 +391,42 @@ def show_security_checks(json_output: bool = False) -> int:
             pass
         return 2
 
-    return 1 if result.findings else 0
+    return 1 if result.actionable else 0
+
+
+def analyze_history_snapshot(identifier: str, json_output: bool = False) -> int:
+    """Combine snapshot drift and current security posture findings."""
+    try:
+        _, baseline_report = read_snapshot(identifier)
+        current_report = build_report()
+        drift = compare_snapshots(
+            normalize_report(baseline_report),
+            normalize_report(current_report),
+        )
+        exposure = current_report.get("exposure")
+        if not isinstance(exposure, dict):
+            raise ValueError("current report exposure must be an object")
+        result = combine_findings(
+            drift_findings(drift),
+            posture_findings(
+                analyze_security_posture(
+                    current_report.get("firewall"),
+                    exposure.get("listening_ports"),
+                )
+            ),
+        )
+        if json_output:
+            output = json.dumps(result.as_dict(), indent=2, sort_keys=True)
+        else:
+            output = format_findings(result, "unified analysis")
+        print(output)
+    except Exception as error:
+        try:
+            print(f"driftbox: analysis failed: {error}", file=sys.stderr)
+        except Exception:
+            pass
+        return 2
+    return 1 if result.actionable else 0
 
 
 def _show_history_error(action: str, error: Exception) -> None:
@@ -485,6 +529,22 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Write a machine-readable JSON result",
     )
+    analyze_parser = commands.add_parser(
+        "analyze",
+        help="Analyze current posture and drift from a history snapshot",
+    )
+    analyze_parser.add_argument(
+        "snapshot",
+        nargs="?",
+        default="latest",
+        help="Snapshot identifier or latest (default: latest)",
+    )
+    analyze_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Write versioned machine-readable findings",
+    )
     history_parser = commands.add_parser(
         "history",
         help="Capture and inspect persistent local report history",
@@ -551,6 +611,8 @@ def main() -> int:
         return verify_integrity(args.path, args.manifest)
     elif args.command == "check":
         return show_security_checks(args.json_output)
+    elif args.command == "analyze":
+        return analyze_history_snapshot(args.snapshot, args.json_output)
     elif args.command == "history":
         if args.history_command == "capture":
             return capture_history()
