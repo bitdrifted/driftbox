@@ -332,49 +332,89 @@ Nmap version: 7.99
 Scan profile: active authorized TCP connect scan; no DNS; no host discovery; lightweight service version detection.
 TCP ports examined: 100 (common-port scope)
 Completion status: completed
-Open ports: 1
+Open ports: 3
 Evidence incomplete: no
 
 WHAT THIS MEANS
 ---------------
 - An open port means a service accepted a connection during this scan.
-- A service or version label is evidence reported by Nmap, not a guaranteed identity.
+- Nmap service and version labels are observations, not guaranteed identity.
 - An open service is not automatically vulnerable or malicious.
-- No open result does not prove the host has no services.
-- Only the selected common TCP ports were examined.
-- Firewalls and filtering can affect results.
-- This scan does not establish internet reachability.
 
 SERVICE EVIDENCE
 ----------------
-tcp/443
+tcp/135
   State/reason: open / syn-ack
-  Service name: https
-  Product: Example Web Server
-  Version: 1.24
-  Extra information: TLSv1.3
-  Tunnel/TLS: ssl
-  CPE: cpe:/a:example:web_server:1.24
-  Detection method/confidence: probed / 10
+  Service name: msrpc
+  Common association: Commonly associated with Microsoft Windows RPC.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+tcp/139
+  State/reason: open / syn-ack
+  Service name: netbios-ssn
+  Common association: Commonly associated with legacy Windows file/printer networking.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+tcp/445
+  State/reason: open / syn-ack
+  Service name: microsoft-ds
+  Common association: Commonly associated with SMB and Windows file sharing.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+
+BOTTOM LINE
+-----------
+Nmap reported 3 open TCP service endpoints. The recognized service labels are commonly seen on Windows systems. Nothing in this evidence proves a vulnerability. Verify that SMB/NetBIOS service exposure is intentional and restricted by firewall rules to only the networks that need it. This scan does not establish internet reachability or reachability from another device.
 
 RECOMMENDED NEXT STEPS
 ----------------------
-1. No automated command: review the evidence with the authorized asset owner.
-2. driftbox services 192.168.1.20 --confirm-authorization --top-ports 100 --json
-3. Unavailable: vulnerability correlation is not implemented.
+Recommendations are suggestions only; Driftbox never executes them automatically.
+1. [LOCAL READ-ONLY] driftbox ports
+   Correlate local listening ports with owning process IDs and names on the computer running Driftbox.
+   Scope: Inspects only this local machine and correlates directly only when it is the scanned target.
+2. [LOCAL READ-ONLY] driftbox firewall
+   Review local firewall status and available profile protection on the computer running Driftbox.
+   Scope: Inspects only this local machine and does not prove policy on a different scanned target.
+3. [LOCAL READ-ONLY] driftbox check
+   Evaluate local firewall and listener posture with Driftbox's existing deterministic checks.
+   Scope: Inspects only this local machine and does not evaluate a different scanned target.
+4. [ACTIVE AUTHORIZED SCAN] driftbox services 192.168.1.20 --confirm-authorization --top-ports 100 --json
+   Optionally collect a new bounded JSON service-inventory record for the exact same device.
+   Scope: This starts another active scan and must never run automatically; use it only after fresh authorization.
+   Authorization: Explicit authorization is required again immediately before scanning 192.168.1.20; private addressing does not establish authorization.
+
+LIMITATIONS
+-----------
+- Only the selected common TCP ports were examined.
+- Firewalls, filtering, and network conditions can affect observations.
+- Vulnerability correlation and exploit guidance are not implemented.
 ```
 
 An open port is evidence that a service accepted a connection during this scan,
 not a vulnerability finding, maliciousness claim, or guarantee of service
 identity. No open-port result is also inconclusive: only the selected common TCP
 ports were examined, and firewalls, filtering, timeouts, and network conditions
-can affect observations. This scan does not establish internet reachability.
+can affect observations. This scan does not establish internet reachability or
+reachability from another device.
 
 Service-inventory JSON uses top-level schema version 1 and an independently
 versioned interpretation schema version 1. It preserves the exact target and
 authorization state; detected Nmap and XML versions; canonical bounded profile;
 execution status and timestamps; TCP port scope; parsed host state; ordered open
 services; raw bounded Nmap service attributes; CPE, method, and confidence;
+recognized common-service context; a plain-English bottom line;
 incomplete-evidence reasons; limitations; and structured recommendations.
 Output keys and services are deterministic. The absolute executable path is
 redacted, uncontrolled raw XML is never included, and output is not saved

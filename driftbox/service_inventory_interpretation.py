@@ -22,6 +22,15 @@ SERVICE_INVENTORY_INTERPRETATION_SCHEMA_VERSION = 1
 ACTIVITY_LEVELS = frozenset(
     {"PASSIVE", "LOCAL READ-ONLY", "ACTIVE AUTHORIZED SCAN", "LAB-ONLY"}
 )
+_COMMON_SERVICE_EXPLANATIONS = {
+    ("tcp", 135, "msrpc"): "Commonly associated with Microsoft Windows RPC.",
+    ("tcp", 139, "netbios-ssn"): (
+        "Commonly associated with legacy Windows file/printer networking."
+    ),
+    ("tcp", 445, "microsoft-ds"): (
+        "Commonly associated with SMB and Windows file sharing."
+    ),
+}
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -102,47 +111,102 @@ def _recommendations(
     )
     return [
         _recommendation(
-            identifier="review-service-ownership",
+            identifier="correlate-local-listeners",
             rank=1,
-            command=(
-                "No automated command: review the evidence with the authorized "
-                "asset owner."
-            ),
+            command="driftbox ports",
             purpose=(
-                "Confirm the expected role and ownership of each reported "
-                "service before deciding on any change."
+                "Correlate local listening ports with owning process IDs and "
+                "names on the computer running Driftbox."
             ),
             reason=(
-                "Nmap service and version labels are observations, not "
-                "guaranteed identity or vulnerability findings."
+                "When the scanned target is this computer, process ownership "
+                "can help confirm whether each listener is expected."
             ),
-            target=target,
-            activity_level="PASSIVE",
+            target="this local machine",
+            activity_level="LOCAL READ-ONLY",
             authorization_required=(
-                "Use only the inventory evidence already collected; obtain the "
-                "asset owner's approval before any additional network activity."
+                "Permission to inspect this local machine; this command does "
+                "not start an active network scan."
             ),
             expected_result=(
-                "A documented owner-approved decision about whether each "
-                "service is expected and how it should be maintained."
+                "A local listener list with bind scope, PID, and process name "
+                "when the operating system provides them."
             ),
             available_now=True,
-            availability_status="operator-action-required",
+            availability_status="available",
             availability_condition=(
-                "This is a review step; Driftbox does not automatically contact "
-                "the target or change it."
+                "Inspects only this local machine and correlates directly only "
+                "when it is the scanned target."
+            ),
+        ),
+        _recommendation(
+            identifier="review-local-firewall",
+            rank=2,
+            command="driftbox firewall",
+            purpose=(
+                "Review local firewall status and available profile protection "
+                "on the computer running Driftbox."
+            ),
+            reason=(
+                "An open local listener and the firewall policy protecting it "
+                "are separate evidence that should be reviewed together."
+            ),
+            target="this local machine",
+            activity_level="LOCAL READ-ONLY",
+            authorization_required=(
+                "Permission to inspect this local machine; this command does "
+                "not change firewall configuration."
+            ),
+            expected_result=(
+                "A read-only local firewall status report with profile details "
+                "when the operating system provides them."
+            ),
+            available_now=True,
+            availability_status="available",
+            availability_condition=(
+                "Inspects only this local machine and does not prove policy on "
+                "a different scanned target."
+            ),
+        ),
+        _recommendation(
+            identifier="evaluate-local-posture",
+            rank=3,
+            command="driftbox check",
+            purpose=(
+                "Evaluate local firewall and listener posture with Driftbox's "
+                "existing deterministic checks."
+            ),
+            reason=(
+                "Local posture findings can identify conditions that deserve "
+                "review without treating Nmap labels as vulnerabilities."
+            ),
+            target="this local machine",
+            activity_level="LOCAL READ-ONLY",
+            authorization_required=(
+                "Permission to inspect this local machine; this command does "
+                "not change services or firewall rules."
+            ),
+            expected_result=(
+                "A local posture summary with normal, suspicious, or critical "
+                "findings and no automatic remediation."
+            ),
+            available_now=True,
+            availability_status="available",
+            availability_condition=(
+                "Inspects only this local machine and does not evaluate a "
+                "different scanned target."
             ),
         ),
         _recommendation(
             identifier="repeat-authorized-service-inventory-json",
-            rank=2,
+            rank=4,
             command=(
                 f"driftbox services {target} --confirm-authorization "
                 f"--top-ports {top_ports} --json"
             ),
             purpose=(
-                "Collect a new, bounded JSON service-inventory record for the "
-                "exact same device."
+                "Optionally collect a new bounded JSON service-inventory record "
+                "for the exact same device."
             ),
             reason=reason,
             target=target,
@@ -155,41 +219,114 @@ def _recommendations(
             available_now=True,
             availability_status="available",
             availability_condition=(
-                "Uses only the selected common TCP-port scope and the "
-                "operator-installed Nmap executable."
-            ),
-        ),
-        _recommendation(
-            identifier="correlate-vulnerabilities",
-            rank=3,
-            command="Unavailable: vulnerability correlation is not implemented.",
-            purpose=(
-                "Correlate reviewed service evidence with authoritative "
-                "vulnerability data without treating a label as proof."
-            ),
-            reason=(
-                "Product, version, CPE, and detection-confidence evidence may "
-                "support later correlation, but this milestone makes no "
-                "vulnerability claim."
-            ),
-            target=target,
-            activity_level="PASSIVE",
-            authorization_required=(
-                "Not available in this milestone; any later validation must "
-                "retain explicit target authorization and evidence review."
-            ),
-            expected_result=(
-                "A future evidence-correlated result with uncertainty and "
-                "source provenance; no exploit command generation."
-            ),
-            available_now=False,
-            availability_status="planned-next-milestone",
-            availability_condition=(
-                "Vulnerability correlation is the next unimplemented milestone; "
-                "exploit guidance remains prohibited here."
+                "This starts another active scan and must never run "
+                "automatically; use it only after fresh authorization."
             ),
         ),
     ]
+
+
+def _recognized_common_services(
+    services: Sequence[object],
+) -> list[dict[str, object]]:
+    """Explain only exact protocol, port, and observed-name relationships."""
+    recognized: list[dict[str, object]] = []
+    for raw_item in services:
+        item = _mapping(raw_item, "service")
+        service = _mapping(item.get("service"), "service details")
+        protocol = item.get("protocol")
+        port = item.get("port")
+        name = service.get("name")
+        if (
+            not isinstance(protocol, str)
+            or isinstance(port, bool)
+            or not isinstance(port, int)
+            or not isinstance(name, str)
+        ):
+            continue
+        normalized_name = name.casefold()
+        explanation = _COMMON_SERVICE_EXPLANATIONS.get(
+            (protocol.casefold(), port, normalized_name)
+        )
+        if explanation is None:
+            continue
+        recognized.append(
+            {
+                "protocol": protocol.casefold(),
+                "port": port,
+                "observed_name": name,
+                "explanation": explanation,
+            }
+        )
+    recognized.sort(
+        key=lambda item: (
+            str(item["protocol"]),
+            int(item["port"]),
+            str(item["observed_name"]),
+        )
+    )
+    return recognized
+
+
+def _bottom_line(
+    services: Sequence[object],
+    recognized: Sequence[Mapping[str, object]],
+    incomplete: bool,
+) -> str:
+    service_count = len(services)
+    if service_count:
+        statements = [
+            f"Nmap reported {service_count} open TCP service "
+            f"{'endpoint' if service_count == 1 else 'endpoints'}."
+        ]
+    else:
+        statements = [
+            "Nmap reported no open TCP services in the selected common-port scope; "
+            "that does not prove the target has no services."
+        ]
+    if recognized:
+        statements.append(
+            "The recognized service labels are commonly seen on Windows systems."
+        )
+    statements.append("Nothing in this evidence proves a vulnerability.")
+    recognized_keys = {
+        (
+            item.get("protocol"),
+            item.get("port"),
+            item.get("observed_name").casefold()
+            if isinstance(item.get("observed_name"), str)
+            else None,
+        )
+        for item in recognized
+    }
+    has_netbios = ("tcp", 139, "netbios-ssn") in recognized_keys
+    has_smb = ("tcp", 445, "microsoft-ds") in recognized_keys
+    if has_netbios or has_smb:
+        if has_netbios and has_smb:
+            review_name = "SMB/NetBIOS"
+        elif has_smb:
+            review_name = "SMB"
+        else:
+            review_name = "NetBIOS"
+        statements.append(
+            f"Verify that {review_name} service exposure is intentional and "
+            "restricted by firewall rules to only the networks that need it."
+        )
+    elif service_count:
+        statements.append(
+            "Verify that the reported services are intentional and appropriately "
+            "restricted by firewall policy."
+        )
+    if incomplete:
+        statements.append(
+            "Some evidence was incomplete, so review the recorded reasons before "
+            "drawing conclusions."
+        )
+    statements.append(
+        "This scan does not establish internet reachability or reachability from "
+        "another device."
+    )
+    return " ".join(statements)
 
 
 def build_service_inventory_interpretation(report: Mapping[str, object]) -> dict[str, object]:
@@ -207,20 +344,12 @@ def build_service_inventory_interpretation(report: Mapping[str, object]) -> dict
     incomplete = _mapping(report.get("evidence"), "evidence").get("incomplete")
     if not isinstance(incomplete, bool):
         raise ValueError("Service inventory evidence status is malformed.")
+    recognized = _recognized_common_services(services)
     meaning = [
         "An open port means a service accepted a connection during this scan.",
-        "A service or version label is evidence reported by Nmap, not a guaranteed identity.",
+        "Nmap service and version labels are observations, not guaranteed identity.",
         "An open service is not automatically vulnerable or malicious.",
-        "No open result does not prove the host has no services.",
-        "Only the selected common TCP ports were examined.",
-        "Firewalls and filtering can affect results.",
-        "This scan does not establish internet reachability.",
     ]
-    if incomplete:
-        meaning.append(
-            "Some evidence was incomplete; interpret the listed observations "
-            "with the recorded limitations."
-        )
     return {
         "schema_version": SERVICE_INVENTORY_INTERPRETATION_SCHEMA_VERSION,
         "service_summary": {
@@ -237,6 +366,13 @@ def build_service_inventory_interpretation(report: Mapping[str, object]) -> dict
             },
         },
         "what_this_means": meaning,
+        "recognized_common_services": recognized,
+        "bottom_line": _bottom_line(services, recognized, incomplete),
+        "limitations": [
+            "Only the selected common TCP ports were examined.",
+            "Firewalls, filtering, and network conditions can affect observations.",
+            "Vulnerability correlation and exploit guidance are not implemented.",
+        ],
         "recommendations": _recommendations(target, len(services), top_ports),
         "detailed_evidence": {
             "services": deepcopy(services),
@@ -268,8 +404,6 @@ def validate_service_recommendation_commands(
         command = recommendation.get("command")
         if not isinstance(command, str):
             raise ValueError("Recommendation command is malformed.")
-        if command.startswith(("No automated command:", "Unavailable:")):
-            continue
         if not command.startswith("driftbox "):
             raise ValueError(f"Recommendation command is unsafe: {command}")
         try:
@@ -277,7 +411,16 @@ def validate_service_recommendation_commands(
             if argv[:1] != ["driftbox"] or len(argv) < 2:
                 raise ValueError("Recommendation command is malformed.")
             parsed = parse_command(argv[1:])
-            if getattr(parsed, "command", None) != "services":
+            parsed_command = getattr(parsed, "command", None)
+            if parsed_command in {"ports", "firewall", "check"}:
+                if argv != ["driftbox", parsed_command]:
+                    raise ValueError("Local recommendation command is malformed.")
+                if recommendation.get("target") != "this local machine":
+                    raise ValueError("Local recommendation target is malformed.")
+                if recommendation.get("activity_level") != "LOCAL READ-ONLY":
+                    raise ValueError("Local recommendation activity is malformed.")
+                continue
+            if parsed_command != "services":
                 raise ValueError("Recommendation command is unsupported.")
             parsed_target = validate_service_target(
                 getattr(parsed, "target", None)
@@ -291,6 +434,8 @@ def validate_service_recommendation_commands(
             if getattr(parsed, "json_output", False) is not True:
                 raise ValueError("Recommendation command must preserve JSON evidence.")
             validate_top_ports(getattr(parsed, "top_ports", None))
+            if recommendation.get("activity_level") != "ACTIVE AUTHORIZED SCAN":
+                raise ValueError("Service recommendation activity is malformed.")
         except (ValueError, SystemExit) as error:
             raise ValueError(
                 f"Recommendation command is not supported: {command}"

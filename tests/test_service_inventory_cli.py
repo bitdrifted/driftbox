@@ -56,6 +56,33 @@ def sample_result(
     )
 
 
+def privacy_safe_windows_services() -> tuple[dict[str, object], ...]:
+    """Model common Windows service-label relationships without live inventory."""
+    records: list[dict[str, object]] = []
+    relationships = ((135, "msrpc"), (139, "netbios-ssn"), (445, "microsoft-ds"))
+    for port, name in relationships:
+        records.append(
+            {
+                "protocol": "tcp",
+                "port": port,
+                "state": "open",
+                "reason": "syn-ack",
+                "service": {
+                    "name": name,
+                    "product": None,
+                    "version": None,
+                    "extrainfo": None,
+                    "tunnel": None,
+                    "cpe": [],
+                    "method": "table",
+                    "confidence": 3,
+                },
+                "raw": {"name": name},
+            }
+        )
+    return tuple(records)
+
+
 class ServiceInventoryParserTests(unittest.TestCase):
     def test_parser_has_explicit_authorization_json_and_bounded_scope(self) -> None:
         parsed = build_parser().parse_args([
@@ -232,6 +259,70 @@ class ServiceInventoryFormattingTests(unittest.TestCase):
         self.assertIn("Tunnel/TLS: unavailable", text)
         self.assertIn("Vulnerability correlation", text)
 
+    @patch("driftbox.cli.NmapAdapter")
+    def test_privacy_safe_windows_relationships_have_context_and_bottom_line(
+        self, adapter: Mock
+    ) -> None:
+        target = "10.55.0.20"
+        adapter.return_value.scan.return_value = sample_result(
+            services=privacy_safe_windows_services(), target=target
+        )
+        output = io.StringIO()
+        with patch("driftbox.cli.show_listening_ports") as ports, patch(
+            "driftbox.cli.show_firewall_info"
+        ) as firewall, patch("driftbox.cli.show_security_checks") as check, redirect_stdout(
+            output
+        ):
+            self.assertEqual(
+                run_service_inventory(
+                    target,
+                    authorization_confirmed=True,
+                ),
+                0,
+            )
+        ports.assert_not_called()
+        firewall.assert_not_called()
+        check.assert_not_called()
+        adapter.return_value.scan.assert_called_once_with(target, top_ports=100)
+        text = output.getvalue()
+        self.assertIn(
+            "Common association: Commonly associated with Microsoft Windows RPC.",
+            text,
+        )
+        self.assertIn(
+            "Common association: Commonly associated with legacy Windows "
+            "file/printer networking.",
+            text,
+        )
+        self.assertIn(
+            "Common association: Commonly associated with SMB and Windows file sharing.",
+            text,
+        )
+        self.assertIn("BOTTOM LINE", text)
+        self.assertIn("commonly seen on Windows systems", text)
+        self.assertIn("Nothing in this evidence proves a vulnerability", text)
+        self.assertIn("SMB/NetBIOS service exposure is intentional", text)
+        self.assertIn("restricted by firewall rules", text)
+        self.assertIn(
+            "does not establish internet reachability or reachability from another device",
+            text,
+        )
+        self.assertEqual(text.count("not guaranteed identity"), 1)
+        self.assertEqual(
+            text.count("Only the selected common TCP ports were examined."), 1
+        )
+        self.assertIn(
+            "Recommendations are suggestions only; Driftbox never executes them "
+            "automatically.",
+            text,
+        )
+        self.assertIn("1. [LOCAL READ-ONLY] driftbox ports", text)
+        self.assertIn("2. [LOCAL READ-ONLY] driftbox firewall", text)
+        self.assertIn("3. [LOCAL READ-ONLY] driftbox check", text)
+        self.assertIn(
+            "4. [ACTIVE AUTHORIZED SCAN] driftbox services 10.55.0.20 ", text
+        )
+
 
 class ServiceInventoryRecommendationTests(unittest.TestCase):
     def test_recommendations_are_ranked_parser_valid_and_non_alarmist(self) -> None:
@@ -251,16 +342,66 @@ class ServiceInventoryRecommendationTests(unittest.TestCase):
         report = json.loads(output.getvalue())
         interpretation = build_service_inventory_interpretation(report)
         recommendations = interpretation["recommendations"]
-        self.assertEqual([item["rank"] for item in recommendations], [1, 2, 3])
+        self.assertEqual([item["rank"] for item in recommendations], [1, 2, 3, 4])
+        self.assertEqual(
+            [item["command"] for item in recommendations],
+            [
+                "driftbox ports",
+                "driftbox firewall",
+                "driftbox check",
+                "driftbox services 192.168.1.20 --confirm-authorization "
+                "--top-ports 100 --json",
+            ],
+        )
+        self.assertEqual(
+            [item["activity_level"] for item in recommendations],
+            [
+                "LOCAL READ-ONLY",
+                "LOCAL READ-ONLY",
+                "LOCAL READ-ONLY",
+                "ACTIVE AUTHORIZED SCAN",
+            ],
+        )
         validate_service_recommendation_commands(recommendations, build_parser().parse_args)
         rendered = json.dumps(recommendations)
-        self.assertIn("not implemented", rendered)
         self.assertNotIn("--script", rendered)
         self.assertNotIn("metasploit", rendered.lower())
+
+    @patch("driftbox.cli.NmapAdapter")
+    def test_interpretation_structures_common_windows_relationships(
+        self, adapter: Mock
+    ) -> None:
+        target = "10.55.0.20"
+        adapter.return_value.scan.return_value = sample_result(
+            services=privacy_safe_windows_services(), target=target
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                run_service_inventory(
+                    target,
+                    authorization_confirmed=True,
+                    json_output=True,
+                ),
+                0,
+            )
+        interpretation = json.loads(output.getvalue())["interpretation"]
+        recognized = interpretation["recognized_common_services"]
+        self.assertEqual([item["port"] for item in recognized], [135, 139, 445])
+        self.assertEqual(
+            [item["observed_name"] for item in recognized],
+            ["msrpc", "netbios-ssn", "microsoft-ds"],
+        )
+        self.assertTrue(
+            all("Commonly associated" in item["explanation"] for item in recognized)
+        )
+        self.assertIn("commonly seen on Windows systems", interpretation["bottom_line"])
 
     def test_unexpected_external_recommendation_is_rejected(self) -> None:
         unsafe_commands = (
             "curl https://example.test",
+            "driftbox report",
+            "driftbox ports",
             "driftbox services 8.8.8.8 --confirm-authorization --json",
             "driftbox services 10.0.0.2 --confirm-authorization --json",
             "driftbox services 10.0.0.1 --json",

@@ -1312,13 +1312,31 @@ def format_service_inventory(report: dict[str, object]) -> str:
         raise ValueError("Service inventory report is malformed.")
     summary = interpretation.get("service_summary")
     meaning = interpretation.get("what_this_means")
+    recognized = interpretation.get("recognized_common_services")
+    bottom_line = interpretation.get("bottom_line")
+    limitations = interpretation.get("limitations")
     recommendations = interpretation.get("recommendations")
     if (
         not isinstance(summary, dict)
         or not isinstance(meaning, list)
+        or not isinstance(recognized, list)
+        or not isinstance(bottom_line, str)
+        or not isinstance(limitations, list)
         or not isinstance(recommendations, list)
     ):
         raise ValueError("Service inventory interpretation is malformed.")
+
+    recognized_by_key = {
+        (
+            item.get("protocol"),
+            item.get("port"),
+            item.get("observed_name").casefold()
+            if isinstance(item.get("observed_name"), str)
+            else None,
+        ): item.get("explanation")
+        for item in recognized
+        if isinstance(item, dict) and isinstance(item.get("explanation"), str)
+    }
 
     def display_service_value(value: object) -> str:
         if value is None or value == "" or value == []:
@@ -1367,12 +1385,25 @@ def format_service_inventory(report: dict[str, object]) -> str:
         confidence = display_service_value(
             service.get("confidence", "unavailable")
         )
-        lines.extend(
+        service_name = service.get("name", "unknown")
+        service_lines = [
+            f"{protocol}/{port}",
+            f"  State/reason: {state} / {reason}",
+            f"  Service name: {display_service_value(service_name)}",
+        ]
+        association = recognized_by_key.get(
+            (
+                str(item.get("protocol", "")).casefold(),
+                port,
+                service_name.casefold() if isinstance(service_name, str) else None,
+            )
+        )
+        if isinstance(association, str):
+            service_lines.append(
+                f"  Common association: {sanitize_display(association, maximum=240)}"
+            )
+        service_lines.extend(
             [
-                f"{protocol}/{port}",
-                f"  State/reason: {state} / {reason}",
-                "  Service name: "
-                f"{display_service_value(service.get('name', 'unknown'))}",
                 "  Product: "
                 f"{display_service_value(service.get('product', 'unavailable'))}",
                 "  Version: "
@@ -1385,6 +1416,7 @@ def format_service_inventory(report: dict[str, object]) -> str:
                 f"  Detection method/confidence: {method} / {confidence}",
             ]
         )
+        lines.extend(service_lines)
     reasons = evidence.get("incomplete_reasons", [])
     if evidence.get("incomplete") is True:
         reason_text = (
@@ -1393,35 +1425,47 @@ def format_service_inventory(report: dict[str, object]) -> str:
             else "unavailable"
         )
         lines.append(f"Incomplete evidence reasons: {reason_text}")
-    lines.extend(["", "RECOMMENDED NEXT STEPS", "----------------------"])
+    lines.extend(
+        [
+            "",
+            "BOTTOM LINE",
+            "-----------",
+            sanitize_display(bottom_line, maximum=1_200),
+            "",
+            "RECOMMENDED NEXT STEPS",
+            "----------------------",
+            "Recommendations are suggestions only; Driftbox never executes them "
+            "automatically.",
+        ]
+    )
     for recommendation in recommendations:
         if not isinstance(recommendation, dict):
             continue
         availability = recommendation.get("availability", {})
         if not isinstance(availability, dict):
             availability = {}
-        lines.extend(
-            [
-                f"{recommendation.get('rank', 'unavailable')}. "
-                f"{recommendation.get('command', 'unavailable')}",
-                f"   Purpose: {recommendation.get('purpose', 'unavailable')}",
-                f"   Reason: {recommendation.get('reason', 'unavailable')}",
-                f"   Target: {recommendation.get('target', 'unavailable')}",
-                "   Activity/risk: "
-                f"{recommendation.get('activity_level', 'unavailable')}",
+        activity = recommendation.get("activity_level", "unavailable")
+        recommendation_lines = [
+            f"{recommendation.get('rank', 'unavailable')}. "
+            f"[{sanitize_display(activity)}] "
+            f"{sanitize_display(recommendation.get('command', 'unavailable'), maximum=300)}",
+            "   "
+            f"{sanitize_display(recommendation.get('purpose', 'unavailable'), maximum=360)}",
+            "   Scope: "
+            f"{sanitize_display(availability.get('condition', 'unavailable'), maximum=360)}",
+        ]
+        if activity == "ACTIVE AUTHORIZED SCAN":
+            recommendation_lines.append(
                 "   Authorization: "
-                f"{recommendation.get('authorization_required', 'unavailable')}",
-                "   Expected result: "
-                f"{recommendation.get('expected_result', 'unavailable')}",
-                f"   Availability: {availability.get('status', 'unavailable')}; "
-                f"{availability.get('condition', 'unavailable')}",
-            ]
-        )
+                f"{sanitize_display(recommendation.get('authorization_required', 'unavailable'), maximum=360)}"
+            )
+        lines.extend(recommendation_lines)
     lines.extend(
         [
             "",
-            "Limitations:",
-            *(f"- {item}" for item in report.get("limitations", [])),
+            "LIMITATIONS",
+            "-----------",
+            *(f"- {sanitize_display(item, maximum=240)}" for item in limitations),
         ]
     )
     return "\n".join(lines)
