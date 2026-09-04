@@ -578,9 +578,15 @@ service evidence, canonical CPE and eligibility reason, deterministic lookup
 plan, candidate status, NVD status and English description, timestamps, best
 supported CVSS version/score/vector/severity, CWE IDs, KEV fields when present,
 retrieval/cache state, exact authoritative provenance, uncertainty,
-limitations, and structured next steps. Candidates are ordered with KEV-listed
-items first, then by severity/score and CVE ID. Human output independently bounds
-its preview; `--json` retains the complete bounded evidence.
+limitations, and structured next steps. A CVE associated with multiple eligible
+CPE queries appears once, with every distinct CPE/service correlation retained
+in deterministic supporting evidence. Candidate limits count unique CVEs, not
+correlation occurrences. Conflicting NVD metadata variants for one CVE are
+preserved, make the candidate and report partial, and require authoritative
+review; the highest reported severity and score are used only for deterministic
+display and ordering. Candidates are ordered with KEV-listed items first, then
+by severity/score and CVE ID. Human output independently bounds its preview and
+lists each CVE once; `--json` retains the complete bounded evidence.
 
 An NVD result means NVD associated a CVE candidate with the exact CPE sent. It
 does not prove the saved device is affected, vulnerable, exploitable,
