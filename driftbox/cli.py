@@ -65,6 +65,28 @@ from driftbox.discovery_interpretation import (
     validate_recommendation_commands,
     with_discovery_interpretation,
 )
+from driftbox.service_inventory import (
+    AuthorizationRequiredError,
+    DEFAULT_TOP_PORTS,
+    NmapAdapter,
+    NmapExecutionError,
+    NmapExecutionTimeoutError,
+    NmapUnavailableError,
+    NmapXMLParseError,
+    NmapXMLSecurityError,
+    ServiceTargetValidationError,
+    SERVICE_INVENTORY_SCHEMA_VERSION,
+    TopPortsValidationError,
+    build_nmap_command,
+    sanitize_display,
+    validate_service_target,
+    validate_top_ports,
+)
+from driftbox.service_inventory_interpretation import (
+    build_service_inventory_interpretation,
+    validate_service_recommendation_commands,
+    with_service_inventory_interpretation,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -1147,6 +1169,414 @@ def run_network_discovery(
         return 4
 
 
+def _service_attribute(value: object, name: str, default: object = None) -> object:
+    """Read a dataclass or mapping adapter value without accepting surprises."""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _timestamp_text(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, str) and value:
+        return value
+    raise ValueError("Nmap returned malformed timestamp evidence.")
+
+
+def _service_inventory_report(
+    target: str,
+    top_ports: int,
+    result: object,
+) -> dict[str, object]:
+    """Build the public, bounded service-inventory transport document."""
+    installation = _service_attribute(result, "installation")
+    parsed = _service_attribute(result, "parsed")
+    command = _service_attribute(result, "command")
+    host = _service_attribute(parsed, "host")
+    services = _service_attribute(parsed, "services")
+    incomplete = _service_attribute(parsed, "evidence_incomplete")
+    incomplete_reasons = _service_attribute(parsed, "incomplete_reasons")
+    nmap_xml_version = _service_attribute(parsed, "nmap_xml_version")
+    if not isinstance(host, dict) or not isinstance(services, (list, tuple)):
+        raise ValueError("Nmap returned malformed service evidence.")
+    if not isinstance(incomplete, bool) or not isinstance(
+        incomplete_reasons, (list, tuple)
+    ):
+        raise ValueError("Nmap returned malformed evidence completeness metadata.")
+    if not isinstance(command, (list, tuple)) or any(
+        not isinstance(item, str) for item in command
+    ):
+        raise ValueError("Nmap returned malformed command evidence.")
+    version = _service_attribute(installation, "version")
+    executable = _service_attribute(installation, "executable")
+    if not isinstance(version, str) or not isinstance(executable, str):
+        raise ValueError("Nmap installation metadata is malformed.")
+    expected_command = build_nmap_command(executable, target, top_ports)
+    if list(command) != expected_command:
+        raise ValueError("Nmap returned unexpected scan-profile evidence.")
+    if nmap_xml_version is not None and not isinstance(nmap_xml_version, str):
+        raise ValueError("Nmap returned malformed XML-version evidence.")
+    normalized_services = [
+        dict(item) for item in services if isinstance(item, dict)
+    ]
+    if len(normalized_services) != len(services):
+        raise ValueError("Nmap returned malformed service evidence.")
+    normalized_services.sort(
+        key=lambda item: (str(item.get("protocol", "")), int(item.get("port", 0)))
+    )
+    if len(normalized_services) > top_ports:
+        raise ValueError("Nmap returned more services than the selected port scope.")
+    reasons = sorted(str(reason) for reason in incomplete_reasons)
+    status = "partial" if incomplete else "completed"
+    started_at = _timestamp_text(_service_attribute(result, "started_at"))
+    completed_at = _timestamp_text(_service_attribute(result, "completed_at"))
+    if _service_attribute(result, "exit_code") != 0:
+        raise ValueError("Nmap returned unexpected successful-execution metadata.")
+    return {
+        "schema_version": SERVICE_INVENTORY_SCHEMA_VERSION,
+        "driftbox_version": __version__,
+        "generated_at": completed_at,
+        "target": {"address": target, "canonical_numeric_ipv4": True},
+        "authorization": {
+            "confirmed": True,
+            "confirmation_flag": "--confirm-authorization",
+            "statement": (
+                "The operator confirmed authorization for this exact target. "
+                "Private addressing does not prove authorization."
+            ),
+        },
+        "nmap": {
+            "version": version,
+            "xml_version": nmap_xml_version,
+            "installation": "operator-installed executable detected",
+        },
+        "scan_profile": {
+            "classification": "active authorized single-device service inventory",
+            "protocol": "tcp",
+            "tcp_connect_scan": True,
+            "dns_resolution": "disabled",
+            "host_discovery": "disabled",
+            "arp_host_discovery": "disabled",
+            "privilege_mode": "unprivileged",
+            "service_detection": "lightweight version detection",
+            "scripts": "disabled",
+            "os_detection": "disabled",
+            "udp_scanning": "disabled",
+            "xml_output": "standard output",
+            "top_ports": top_ports,
+            "host_timeout_seconds": 60,
+            # Keep the transparent fixed profile without publishing an
+            # operator-specific absolute installation path in saved JSON.
+            "arguments": ["nmap", *list(command)[1:]],
+        },
+        "execution": {
+            "status": status,
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "exit_code": 0,
+        },
+        "port_scope": {
+            "protocol": "tcp",
+            "selection": "Nmap top common TCP ports",
+            "ports_examined": top_ports,
+        },
+        "host": dict(host),
+        "services": normalized_services,
+        "evidence": {"incomplete": incomplete, "incomplete_reasons": reasons},
+        "limitations": [
+            "Only the selected common TCP ports were examined.",
+            "Nmap service and version labels are evidence, not guaranteed identity.",
+            "Open services are not automatically vulnerable or malicious.",
+            "Firewalls, filtering, and network conditions can affect observations.",
+            "This scan does not establish internet reachability.",
+            "Vulnerability correlation and exploit guidance are not implemented.",
+        ],
+    }
+
+
+def format_service_inventory(report: dict[str, object]) -> str:
+    """Render bounded, plain-English service evidence for an operator."""
+    interpretation = build_service_inventory_interpretation(report)
+    target = report.get("target", {})
+    nmap = report.get("nmap", {})
+    profile = report.get("scan_profile", {})
+    execution = report.get("execution", {})
+    host = report.get("host", {})
+    evidence = report.get("evidence", {})
+    services = report.get("services", [])
+    report_sections = (target, nmap, profile, execution, host, evidence)
+    if not all(isinstance(item, dict) for item in report_sections) or not isinstance(
+        services, list
+    ):
+        raise ValueError("Service inventory report is malformed.")
+    summary = interpretation.get("service_summary")
+    meaning = interpretation.get("what_this_means")
+    recognized = interpretation.get("recognized_common_services")
+    bottom_line = interpretation.get("bottom_line")
+    limitations = interpretation.get("limitations")
+    recommendations = interpretation.get("recommendations")
+    if (
+        not isinstance(summary, dict)
+        or not isinstance(meaning, list)
+        or not isinstance(recognized, list)
+        or not isinstance(bottom_line, str)
+        or not isinstance(limitations, list)
+        or not isinstance(recommendations, list)
+    ):
+        raise ValueError("Service inventory interpretation is malformed.")
+
+    recognized_by_key = {
+        (
+            item.get("protocol"),
+            item.get("port"),
+            item.get("observed_name").casefold()
+            if isinstance(item.get("observed_name"), str)
+            else None,
+        ): item.get("explanation")
+        for item in recognized
+        if isinstance(item, dict) and isinstance(item.get("explanation"), str)
+    }
+
+    def display_service_value(value: object) -> str:
+        if value is None or value == "" or value == []:
+            return "unavailable"
+        if isinstance(value, list):
+            return sanitize_display(", ".join(str(item) for item in value))
+        return sanitize_display(value)
+
+    lines = [
+        "driftbox :: authorized single-device service inventory",
+        "",
+        "SERVICE INVENTORY SUMMARY",
+        "-------------------------",
+        f"Target: {target.get('address', 'unavailable')}",
+        "Authorization confirmation: yes (--confirm-authorization). "
+        "Private addressing does not prove authorization.",
+        f"Nmap version: {sanitize_display(nmap.get('version', 'unavailable'))}",
+        "Scan profile: active authorized TCP connect scan; no DNS; no host "
+        "discovery; lightweight service version detection.",
+        "TCP ports examined: "
+        f"{profile.get('top_ports', 'unavailable')} (common-port scope)",
+        f"Completion status: {execution.get('status', 'unavailable')}",
+        f"Open ports: {summary.get('open_port_count', 'unavailable')}",
+        "Evidence incomplete: " + ("yes" if evidence.get("incomplete") is True else "no"),
+        "",
+        "WHAT THIS MEANS",
+        "---------------",
+        *(f"- {sanitize_display(item, maximum=240)}" for item in meaning),
+        "",
+        "SERVICE EVIDENCE",
+        "----------------",
+    ]
+    if not services:
+        lines.append(
+            "No reported open ports in the selected common TCP-port scope."
+        )
+    for item in services:
+        service = item.get("service", {})
+        if not isinstance(service, dict):
+            service = {}
+        port = item.get("port", "unavailable")
+        protocol = sanitize_display(item.get("protocol", "unknown"))
+        state = sanitize_display(item.get("state", "unknown"))
+        reason = sanitize_display(item.get("reason", "unavailable"))
+        method = display_service_value(service.get("method", "unavailable"))
+        confidence = display_service_value(
+            service.get("confidence", "unavailable")
+        )
+        service_name = service.get("name", "unknown")
+        service_lines = [
+            f"{protocol}/{port}",
+            f"  State/reason: {state} / {reason}",
+            f"  Service name: {display_service_value(service_name)}",
+        ]
+        association = recognized_by_key.get(
+            (
+                str(item.get("protocol", "")).casefold(),
+                port,
+                service_name.casefold() if isinstance(service_name, str) else None,
+            )
+        )
+        if isinstance(association, str):
+            service_lines.append(
+                f"  Common association: {sanitize_display(association, maximum=240)}"
+            )
+        service_lines.extend(
+            [
+                "  Product: "
+                f"{display_service_value(service.get('product', 'unavailable'))}",
+                "  Version: "
+                f"{display_service_value(service.get('version', 'unavailable'))}",
+                "  Extra information: "
+                f"{display_service_value(service.get('extrainfo', 'unavailable'))}",
+                "  Tunnel/TLS: "
+                f"{display_service_value(service.get('tunnel', 'unavailable'))}",
+                f"  CPE: {display_service_value(service.get('cpe', 'unavailable'))}",
+                f"  Detection method/confidence: {method} / {confidence}",
+            ]
+        )
+        lines.extend(service_lines)
+    reasons = evidence.get("incomplete_reasons", [])
+    if evidence.get("incomplete") is True:
+        reason_text = (
+            ", ".join(sanitize_display(reason) for reason in reasons)
+            if isinstance(reasons, list) and reasons
+            else "unavailable"
+        )
+        lines.append(f"Incomplete evidence reasons: {reason_text}")
+    lines.extend(
+        [
+            "",
+            "BOTTOM LINE",
+            "-----------",
+            sanitize_display(bottom_line, maximum=1_200),
+            "",
+            "RECOMMENDED NEXT STEPS",
+            "----------------------",
+            "Recommendations are suggestions only; Driftbox never executes them "
+            "automatically.",
+        ]
+    )
+    for recommendation in recommendations:
+        if not isinstance(recommendation, dict):
+            continue
+        availability = recommendation.get("availability", {})
+        if not isinstance(availability, dict):
+            availability = {}
+        activity = recommendation.get("activity_level", "unavailable")
+        recommendation_lines = [
+            f"{recommendation.get('rank', 'unavailable')}. "
+            f"[{sanitize_display(activity)}] "
+            f"{sanitize_display(recommendation.get('command', 'unavailable'), maximum=300)}",
+            "   "
+            f"{sanitize_display(recommendation.get('purpose', 'unavailable'), maximum=360)}",
+            "   Scope: "
+            f"{sanitize_display(availability.get('condition', 'unavailable'), maximum=360)}",
+        ]
+        if activity == "ACTIVE AUTHORIZED SCAN":
+            recommendation_lines.append(
+                "   Authorization: "
+                f"{sanitize_display(recommendation.get('authorization_required', 'unavailable'), maximum=360)}"
+            )
+        lines.extend(recommendation_lines)
+    lines.extend(
+        [
+            "",
+            "LIMITATIONS",
+            "-----------",
+            *(f"- {sanitize_display(item, maximum=240)}" for item in limitations),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _show_service_inventory_error(
+    status: str,
+    message: str,
+    *,
+    json_output: bool,
+    scan_started: bool = False,
+) -> None:
+    """Present stable service-inventory errors without exposing a traceback."""
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "schema_version": SERVICE_INVENTORY_SCHEMA_VERSION,
+                    "status": status,
+                    "message": message,
+                    "scan_started": scan_started,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    print(f"driftbox: services: {message}", file=sys.stderr)
+
+
+def run_service_inventory(
+    target_text: str,
+    *,
+    authorization_confirmed: bool,
+    json_output: bool = False,
+    top_ports: object = DEFAULT_TOP_PORTS,
+) -> int:
+    """Authorize, run one bounded Nmap scan, and render evidence."""
+    scan_completed = False
+    try:
+        if not authorization_confirmed:
+            raise AuthorizationRequiredError(
+                "Refused: --confirm-authorization is required for an active scan. "
+                "Private addressing does not prove authorization."
+            )
+        target = validate_service_target(target_text)
+        ports = validate_top_ports(top_ports)
+        result = NmapAdapter().scan(target, top_ports=ports)
+        scan_completed = True
+        report = with_service_inventory_interpretation(
+            _service_inventory_report(target, ports, result)
+        )
+        recommendations = report["interpretation"].get("recommendations")
+        if not isinstance(recommendations, list):
+            raise ValueError("Service inventory recommendations are malformed.")
+        validate_service_recommendation_commands(
+            recommendations, build_parser().parse_args
+        )
+    except AuthorizationRequiredError as error:
+        _show_service_inventory_error(
+            "authorization_required", str(error), json_output=json_output
+        )
+        return 2
+    except (ServiceTargetValidationError, TopPortsValidationError) as error:
+        _show_service_inventory_error(
+            "invalid_request", str(error), json_output=json_output
+        )
+        return 2
+    except NmapUnavailableError as error:
+        _show_service_inventory_error(
+            "nmap_unavailable", str(error), json_output=json_output
+        )
+        return 4
+    except NmapExecutionTimeoutError as error:
+        _show_service_inventory_error(
+            "nmap_timeout", str(error), json_output=json_output, scan_started=True
+        )
+        return 4
+    except NmapExecutionError as error:
+        _show_service_inventory_error(
+            "nmap_failed", str(error), json_output=json_output, scan_started=True
+        )
+        return 4
+    except (NmapXMLSecurityError, NmapXMLParseError) as error:
+        _show_service_inventory_error(
+            "invalid_evidence",
+            str(error),
+            json_output=json_output,
+            scan_started=True,
+        )
+        return 4
+    except Exception as error:
+        _show_service_inventory_error(
+            "unavailable",
+            f"Service inventory could not operate safely: {error}",
+            json_output=json_output,
+            scan_started=scan_completed,
+        )
+        return 4
+    try:
+        print(
+            json.dumps(report, indent=2, sort_keys=True)
+            if json_output
+            else format_service_inventory(report)
+        )
+    except Exception as error:
+        _show_command_error("services output", error)
+        return 4
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -1203,6 +1633,37 @@ def build_parser() -> argparse.ArgumentParser:
             f"Concurrent probe workers, safely bounded to {MIN_WORKERS}-"
             f"{MAX_WORKERS} (default: {DEFAULT_WORKERS})"
         ),
+    )
+    services_parser = commands.add_parser(
+        "services",
+        help="Inventory common TCP services on one authorized private IPv4 device",
+        description=(
+            "Run a bounded active TCP connect scan only against one private, "
+            "loopback, or link-local IPv4 device you are explicitly authorized to inspect."
+        ),
+    )
+    services_parser.add_argument(
+        "target",
+        metavar="TARGET",
+        help="Exactly one canonical numeric IPv4 address; no hostname, CIDR, range, or public address",
+    )
+    services_parser.add_argument(
+        "--confirm-authorization",
+        action="store_true",
+        dest="authorization_confirmed",
+        help="Confirm you are authorized to actively scan this exact target",
+    )
+    services_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Write schema-versioned service inventory evidence to standard output",
+    )
+    services_parser.add_argument(
+        "--top-ports",
+        default=DEFAULT_TOP_PORTS,
+        metavar="NUMBER",
+        help="Common TCP port scope, 1-1000 (default: 100)",
     )
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
@@ -1342,6 +1803,13 @@ def main() -> int:
             json_output=args.json_output,
             timeout_seconds=args.timeout,
             workers=args.workers,
+        )
+    elif args.command == "services":
+        return run_service_inventory(
+            args.target,
+            authorization_confirmed=args.authorization_confirmed,
+            json_output=args.json_output,
+            top_ports=args.top_ports,
         )
     elif args.command == "ports":
         show_listening_ports()

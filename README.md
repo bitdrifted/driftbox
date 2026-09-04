@@ -12,8 +12,9 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, interpreted authorized private-network discovery, safe next-move
-guidance, listening-port inspection, portable JSON reports, persistent report history, report drift detection,
+System inspection, interpreted authorized private-network discovery, authorized
+single-device service inventory, safe next-move guidance, listening-port
+inspection, portable JSON reports, persistent report history, report drift detection,
 file-integrity verification, unified findings, security posture checks, persistent
 configuration, configured scanning, safe scan scheduling, an experimental
 synthetic training mission, automated tests, and cross-platform validation are
@@ -33,6 +34,8 @@ direction.
 | `driftbox network` | Display local network information |
 | `driftbox discover [CIDR]` | Discover evidence of hosts on one authorized private IPv4 network |
 | `driftbox discover [CIDR] --json` | Produce a schema-versioned discovery result for later inventory |
+| `driftbox services TARGET --confirm-authorization` | Inventory common TCP services on one authorized private IPv4 device |
+| `driftbox services TARGET --confirm-authorization --json` | Produce schema-versioned service evidence without terminal truncation |
 | `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
 | `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
@@ -259,11 +262,183 @@ Discovery has stable exit codes:
 | `3` | Multiple suitable local networks require explicit selection; no probes ran |
 | `4` | No suitable local network was found, or discovery could not operate |
 
-This milestone does not perform port scanning, service detection, CVE lookup,
+Discovery itself does not perform port scanning, service detection, CVE lookup,
 Nmap integration, exploitation, credential attacks, stealth, persistence,
-evasion, or attack-tool execution. Tests mock interface, probe, routing-table,
-neighbor-cache, command, and timeout behavior; automated validation does not
-probe or scan a real network.
+evasion, or attack-tool execution. An operator can review a discovered numeric
+address and separately authorize the single-device service inventory described
+below. There is no automatic handoff or target expansion. Discovery tests mock
+interface, probe, routing-table, neighbor-cache, command, and timeout behavior;
+automated validation does not probe or scan a real network.
+
+## authorized single-device service inventory
+
+Service inventory is an explicit active scan of exactly one device. Use it only
+after confirming that you own the target or have permission to scan it. Private
+addressing is a scope restriction, not proof of authorization, so Driftbox
+refuses every service scan unless `--confirm-authorization` is present.
+
+```bash
+driftbox services 192.168.1.20 --confirm-authorization
+driftbox services 192.168.1.20 --confirm-authorization --json
+driftbox services 192.168.1.20 --confirm-authorization --top-ports 1000
+```
+
+`TARGET` must be exactly one canonical numeric IPv4 address in RFC 1918 private,
+IPv4 loopback, or IPv4 link-local space. CIDRs, ranges, wildcards, hostnames,
+URLs, IPv6, alternate numeric spellings, and public or other special-use targets
+are refused before Nmap detection. Driftbox never resolves, follows, or adds a
+target based on Nmap output, redirects, DNS, or discovered names.
+
+The default is Nmap's 100 most commonly used TCP ports. `--top-ports NUMBER`
+accepts only canonical integers from 1 through 1,000. The fixed profile is:
+
+```text
+nmap -n -Pn --disable-arp-ping --unprivileged -sT --top-ports NUMBER -sV --version-light --reason --open --host-timeout 60s -oX - TARGET
+```
+
+This is an `ACTIVE AUTHORIZED SCAN`: a TCP connect scan, no DNS resolution, no
+host-discovery dependency, no ARP discovery, an explicit unprivileged mode,
+bounded common-port scope, lightweight service/version detection, reasons for
+open states, a 60-second Nmap host timeout, a 75-second Driftbox process timeout,
+and XML on standard output for bounded parsing. The single validated target is
+the final argument. Driftbox uses a fixed argument array with `shell=False`.
+
+The profile contains no NSE or default scripts, `--script vuln`, OS detection,
+UDP or SYN/raw-packet scanning, aggressive mode, decoys, spoofing,
+fragmentation, evasion, credential attacks, exploitation, persistence, or extra
+targets. These controls are not exposed as user-supplied options.
+If XML nevertheless contains a script-result element, Driftbox rejects that
+evidence as outside the permitted profile.
+
+Driftbox dynamically finds `nmap` on the operator's `PATH` and asks that
+executable for its version only after authorization, target, and port-scope
+validation. Install Nmap separately and ensure `nmap` is available on `PATH`.
+Driftbox does not bundle, download, update, or redistribute Nmap or Npcap. This
+repository remains MIT-licensed; Nmap is governed separately by the
+[Nmap Public Source License](https://nmap.org/npsl/), and Npcap has its own
+[licensing terms](https://npcap.com/oem/). Operators and redistributors are
+responsible for the upstream terms that apply to their installation and use.
+
+An illustrative privacy-safe terminal result is:
+
+```text
+driftbox :: authorized single-device service inventory
+
+SERVICE INVENTORY SUMMARY
+-------------------------
+Target: 192.168.1.20
+Authorization confirmation: yes (--confirm-authorization). Private addressing does not prove authorization.
+Nmap version: 7.99
+Scan profile: active authorized TCP connect scan; no DNS; no host discovery; lightweight service version detection.
+TCP ports examined: 100 (common-port scope)
+Completion status: completed
+Open ports: 3
+Evidence incomplete: no
+
+WHAT THIS MEANS
+---------------
+- An open port means a service accepted a connection during this scan.
+- Nmap service and version labels are observations, not guaranteed identity.
+- An open service is not automatically vulnerable or malicious.
+
+SERVICE EVIDENCE
+----------------
+tcp/135
+  State/reason: open / syn-ack
+  Service name: msrpc
+  Common association: Commonly associated with Microsoft Windows RPC.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+tcp/139
+  State/reason: open / syn-ack
+  Service name: netbios-ssn
+  Common association: Commonly associated with legacy Windows file/printer networking.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+tcp/445
+  State/reason: open / syn-ack
+  Service name: microsoft-ds
+  Common association: Commonly associated with SMB and Windows file sharing.
+  Product: unavailable
+  Version: unavailable
+  Extra information: unavailable
+  Tunnel/TLS: unavailable
+  CPE: unavailable
+  Detection method/confidence: table / 3
+
+BOTTOM LINE
+-----------
+Nmap reported 3 open TCP service endpoints. The recognized service labels are commonly seen on Windows systems. Nothing in this evidence proves a vulnerability. Verify that SMB/NetBIOS service exposure is intentional and restricted by firewall rules to only the networks that need it. This scan does not establish internet reachability or reachability from another device.
+
+RECOMMENDED NEXT STEPS
+----------------------
+Recommendations are suggestions only; Driftbox never executes them automatically.
+1. [LOCAL READ-ONLY] driftbox ports
+   Correlate local listening ports with owning process IDs and names on the computer running Driftbox.
+   Scope: Inspects only this local machine and correlates directly only when it is the scanned target.
+2. [LOCAL READ-ONLY] driftbox firewall
+   Review local firewall status and available profile protection on the computer running Driftbox.
+   Scope: Inspects only this local machine and does not prove policy on a different scanned target.
+3. [LOCAL READ-ONLY] driftbox check
+   Evaluate local firewall and listener posture with Driftbox's existing deterministic checks.
+   Scope: Inspects only this local machine and does not evaluate a different scanned target.
+4. [ACTIVE AUTHORIZED SCAN] driftbox services 192.168.1.20 --confirm-authorization --top-ports 100 --json
+   Optionally collect a new bounded JSON service-inventory record for the exact same device.
+   Scope: This starts another active scan and must never run automatically; use it only after fresh authorization.
+   Authorization: Explicit authorization is required again immediately before scanning 192.168.1.20; private addressing does not establish authorization.
+
+LIMITATIONS
+-----------
+- Only the selected common TCP ports were examined.
+- Firewalls, filtering, and network conditions can affect observations.
+- Vulnerability correlation and exploit guidance are not implemented.
+```
+
+An open port is evidence that a service accepted a connection during this scan,
+not a vulnerability finding, maliciousness claim, or guarantee of service
+identity. No open-port result is also inconclusive: only the selected common TCP
+ports were examined, and firewalls, filtering, timeouts, and network conditions
+can affect observations. This scan does not establish internet reachability or
+reachability from another device.
+
+Service-inventory JSON uses top-level schema version 1 and an independently
+versioned interpretation schema version 1. It preserves the exact target and
+authorization state; detected Nmap and XML versions; canonical bounded profile;
+execution status and timestamps; TCP port scope; parsed host state; ordered open
+services; raw bounded Nmap service attributes; CPE, method, and confidence;
+recognized common-service context; a plain-English bottom line;
+incomplete-evidence reasons; limitations; and structured recommendations.
+Output keys and services are deterministic. The absolute executable path is
+redacted, uncontrolled raw XML is never included, and output is not saved
+automatically.
+
+Terminal fields are stripped of control and Unicode formatting characters and
+truncated for display. JSON retains the more complete parsed evidence within a
+2,048-character per-field and 1,000,000-byte XML-input boundary. Even bounded
+inventory can contain sensitive private addresses, products, versions, CPEs,
+and configuration clues; protect and review JSON before storing or sharing it.
+
+Service inventory has stable exit codes:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Collection completed or returned explicitly partial evidence, including no reported open ports |
+| `2` | Authorization was not confirmed, or the target/port scope was invalid or unsafe; no scan ran |
+| `4` | Nmap was unavailable, timed out, exited nonzero, returned malformed/oversized evidence, or output failed |
+
+JSON errors include a stable status and `scan_started` boolean. Partial evidence
+is successful but explicitly marked; an open port is never an error or automatic
+vulnerability finding. Vulnerability correlation with authoritative source
+provenance is the next unimplemented milestone. This milestone generates no
+exploit commands.
 
 ## port exposure
 
@@ -642,8 +817,8 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## coming next
 
-- Authorized service inventory and vulnerability-analysis guidance built on
-  reviewed discovery evidence
+- Evidence-correlated vulnerability analysis built on reviewed service
+  inventory, without treating service labels as proof
 - Optional report redaction
 
 ## repository boundary

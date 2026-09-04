@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <status state="up" reason="user-set" />
+    <address addr="192.168.1.20" addrtype="ipv4" />
+    <ports>
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack" />
+        <service name="https" product="Example Web Server" version="1.24" extrainfo="TLSv1.3" tunnel="ssl" method="probed" conf="10">
+          <cpe>cpe:/a:example:web_server:1.24</cpe>
+        </service>
+      </port>
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack" />
+        <service name="ssh" product="Example SSH Server" version="9.6" method="probed" conf="8" />
+      </port>
+      <port protocol="tcp" portid="80">
+        <state state="closed" reason="reset" />
+      </port>
+    </ports>
+  </host>
+  <runstats>
+    <finished time="0" exit="success" />
+  </runstats>
+</nmaprun>
