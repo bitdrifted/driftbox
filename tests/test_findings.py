@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from driftbox.cli import analyze_history_snapshot, build_parser
@@ -84,6 +85,28 @@ class FindingsEngineTests(unittest.TestCase):
                     "recommended_action",
                 },
             )
+
+    def test_posture_mapping_rejects_conflicting_or_malformed_triage_evidence(self) -> None:
+        valid = analyze_security_posture(
+            report("enabled")["firewall"],
+            [listener(port=445, scope="all interfaces")],
+        ).triage_items[1]
+        conflicting = SimpleNamespace(
+            **{
+                **valid.__dict__,
+                "unified_classification": "normal",
+            }
+        )
+        malformed_evidence = SimpleNamespace(
+            **{
+                **valid.__dict__,
+                "evidence": {**valid.evidence, "raw_endpoint_count": 99},
+            }
+        )
+        for item in (conflicting, malformed_evidence):
+            with self.subTest(item=item):
+                with self.assertRaises(ValueError):
+                    posture_findings(SimpleNamespace(triage_items=(item,)))
 
     def test_firewall_regression_is_critical(self) -> None:
         result = drift_findings(

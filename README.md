@@ -16,7 +16,7 @@ System inspection, interpreted authorized private-network discovery, authorized
 single-device service inventory, evidence-driven vulnerability correlation,
 safe next-move guidance, listening-port
 inspection, portable JSON reports, persistent report history, report drift detection,
-file-integrity verification, unified findings, security posture checks, persistent
+file-integrity verification, unified findings, evidence-driven posture triage, persistent
 configuration, configured scanning, safe scan scheduling, an experimental
 synthetic training mission, automated tests, and cross-platform validation are
 operational.
@@ -718,31 +718,93 @@ manifests, unsupported versions, missing or unreadable paths, and permission
 errors. Driftbox fails instead of writing or checking a partial manifest if any
 regular file cannot be read.
 
-## security posture checks
+## posture triage
 
-Analyze existing firewall and listening-port inspection data:
+User testing found that the earlier `driftbox check` treated every all-interface
+binding as a separate suspicious finding. On an otherwise ordinary Windows
+workstation, dual-stack counterparts and dynamic endpoints produced 49 repetitive
+blocks instead of a useful decision aid. No real workstation hostname, address,
+PID, process inventory, or other private evidence is retained in Driftbox.
+
+Run the local inspection and human posture summary:
 
 ```bash
 driftbox check
 ```
 
-Produce a versioned JSON result for automation:
+Preserve complete evidence as dedicated posture-triage schema version 2:
 
 ```bash
 driftbox check --json
 ```
 
-Driftbox reports a `critical` finding when the firewall is confirmed disabled
-and a `suspicious` finding when firewall status is unknown. Unknown status is
-never treated as secure. Services listening on all interfaces or bound to a
-public address are `suspicious`; local-only, link-local, and private-network
-bindings do not produce findings solely because of their scope.
+A **raw endpoint** is one collected listener record. A **presentation group** is
+a deterministic explanation aid that retains every member; it does not assert
+that two records are literally one socket. Driftbox can group compatible
+`0.0.0.0` and `::` records when protocol, port, and normalized process observation
+match. PID is preserved as evidence but excluded from stable grouping identity.
+It never merges wildcard and specific-address bindings.
 
-A broad or public binding does not by itself prove that a service is accessible
-from the internet. Firewall policy, routing, and NAT can all affect reachability.
-The command exits with status `0` when only `normal` findings exist, `1` when a
-`suspicious` or `critical` finding exists, and `2` after an unexpected inspection
-or output error.
+On confirmed Windows evidence only, compatible wildcard TCP observations in the
+49152-65535 dynamic RPC range can form one Windows RPC-range presentation group.
+Repeated high-numbered wildcard UDP observations for one normalized process can
+also be grouped. These rules retain every address, port, process label, and PID.
+They do not prove that every dynamic port is RPC, that grouped records are one
+socket, or that an observed process name is trustworthy. Windows-specific grouping
+is not applied to Linux, macOS, or unknown platforms.
+
+Common port context is deliberately cautious: port 123 is often associated with
+time synchronization; 135 and compatible Windows dynamic endpoints with RPC;
+137-139 and 445 with NetBIOS/SMB; 500 and 4500 with IPsec/IKE; 5353 with mDNS;
+5355 with LLMNR; and 7680 on Windows with Delivery Optimization. A familiar port
+or process label does not prove service identity, safety, or vulnerability, and
+unknown broadly bound services remain visible. There is no safe-port allowlist.
+
+Posture triage uses its own levels and validates their mapping into the existing
+unified findings vocabulary:
+
+| Posture level | Unified classification | Meaning |
+| --- | --- | --- |
+| `informational` | `normal` | Context worth understanding but not independently actionable; never a claim of safety |
+| `review` | `suspicious` | Evidence warrants operator review |
+| `urgent` | `critical` | A confirmed high-priority posture problem |
+
+A confirmed disabled firewall is urgent. Unknown or mixed state requires review
+because protection cannot be assumed. A public-address binding requires review
+even when the firewall is enabled, but the binding does not prove internet
+reachability. Sensitive or remote-administration-associated broad bindings can
+receive review priority with the reason and uncertainty shown. A generic wildcard
+listener with an enabled firewall is normally informational unless stronger
+deterministic evidence elevates it. Enabled status never proves a listener is
+blocked or safe; Driftbox does not infer inbound rules it did not collect, and it
+reports the firewall condition once rather than multiplying it across listeners.
+
+Human output leads with the bottom line and priority review, distinguishes raw
+endpoint and presentation-group counts, shows at most 10 service groups, and says
+when more are available. JSON is independently complete within collection bounds:
+it includes firewall profiles, every sanitized raw endpoint, every group and
+member, grouping reasons, triage and unified classifications, explanations,
+uncertainty, both count families, terminal-bound metadata, deterministic
+recommendations, limitations, and provenance. The privacy-safe synthetic Windows
+regression retains 49 raw endpoints as 14 groups, with 6 review groups and no
+urgent item; the reduction comes from grouping and triage, not discarded evidence.
+
+For example, a synthetic `0.0.0.0:445`/`[::]:445` pair may be presented together
+for review, while a specific documentation-only address such as `192.0.2.25`
+remains separate. The group describes observed evidence only; firewall, routing,
+NAT, reachability, service identity, vulnerability, compromise, and patch state
+require evidence this command does not collect.
+
+Recommendations are structured, local, read-only Driftbox commands such as
+`driftbox firewall`, `driftbox ports`, `driftbox check --json`, and
+`driftbox report`. Every command is parser-validated and is never executed
+automatically. Posture triage adds no subprocess or network boundary and never
+generates Nmap, discovery, remote scan, vulnerability lookup, configuration,
+firewall-change, process-termination, patch, exploit, or attack-tool actions.
+
+Exit status `0` means only informational triage was produced. Status `1` means at
+least one review or urgent item exists. Status `2` means malformed evidence,
+validation failure, collection failure, or output failure prevented a valid result.
 
 ## unified findings and analysis
 
@@ -766,10 +828,11 @@ supporting evidence, and a practical recommended action. Results are sorted
 deterministically for reliable automation.
 
 An enabled-to-disabled firewall change and a currently disabled firewall are
-`critical`. Unknown firewall state, newly detected listeners, and public or
-all-interface listeners are `suspicious`. Removed listeners and firewall
-improvements are `normal`, with guidance to confirm that the change was expected.
-When no actionable drift or posture problem exists, the result is `normal`.
+`critical`. Unknown firewall state, newly detected listeners, public bindings,
+and posture-triage review groups are `suspicious`. Informational posture context,
+removed listeners, and firewall improvements map to `normal` without implying
+safety. When no actionable drift or posture problem exists, the unified result is
+`normal`.
 
 A listener's bind address alone never proves internet accessibility. Firewall
 policy, routing, and NAT may change actual reachability. Analysis is entirely
