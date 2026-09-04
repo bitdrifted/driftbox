@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <status state="up" reason="user-set" />
+    <address addr="10.10.10.25" addrtype="ipv4" />
+    <ports>
+      <extraports state="closed" count="100">
+        <extrareasons reason="conn-refused" count="100" />
+      </extraports>
+    </ports>
+  </host>
+</nmaprun>
