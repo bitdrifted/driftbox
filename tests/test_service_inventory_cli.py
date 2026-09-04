@@ -177,7 +177,10 @@ class ServiceInventoryCommandTests(unittest.TestCase):
         self.assertNotIn("Program Files", first.getvalue())
         self.assertEqual(payload["services"][0]["port"], 443)
         self.assertEqual(payload["interpretation"]["schema_version"], 1)
-        self.assertIn("not_implemented", payload["interpretation"]["service_summary"]["vulnerability_correlation"]["status"])
+        self.assertEqual(
+            payload["interpretation"]["service_summary"]["vulnerability_correlation"]["status"],
+            "not_performed",
+        )
         self.assertEqual(adapter.return_value.scan.call_count, 2)
 
     @patch("driftbox.cli.NmapAdapter")
