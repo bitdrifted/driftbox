@@ -94,6 +94,120 @@ def report() -> dict[str, object]:
     }
 
 
+def manual_output_relationship_report() -> dict[str, object]:
+    """Model the authorized /24 output relationships without network access."""
+    local_address = "192.168.77.200"
+    responsive_addresses = {
+        f"192.168.77.{octet}" for octet in range(1, 10)
+    }
+    cache_only_addresses = {
+        f"192.168.77.{octet}" for octet in range(65, 73)
+    }
+    remote_addresses = [
+        f"192.168.77.{octet}" for octet in range(1, 255)
+        if f"192.168.77.{octet}" != local_address
+    ]
+    hosts: list[dict[str, object]] = []
+    for address in sorted(
+        responsive_addresses | cache_only_addresses | {local_address},
+        key=lambda value: int(value.rsplit(".", 1)[1]),
+    ):
+        if address == local_address:
+            hosts.append({
+                "address": address,
+                "status": "local_machine",
+                "evidence": [{
+                    "kind": "local_interface_address",
+                    "source": "psutil_interface_data",
+                }],
+            })
+        elif address in responsive_addresses:
+            evidence: list[dict[str, object]] = [
+                {"kind": "icmp_echo_reply", "source": "system_ping"}
+            ]
+            host: dict[str, object] = {
+                "address": address,
+                "status": "confirmed_responsive",
+                "evidence": evidence,
+            }
+            if address == "192.168.77.1":
+                evidence.extend([
+                    {"kind": "neighbor_cache", "source": "arp_cache"},
+                    {
+                        "kind": "default_gateway_route",
+                        "source": "routing_table",
+                        "interface": local_address,
+                    },
+                ])
+                host["device_role"] = "gateway_router"
+            hosts.append(host)
+        else:
+            hosts.append({
+                "address": address,
+                "status": "known_neighbor",
+                "evidence": [{
+                    "kind": "neighbor_cache",
+                    "source": "arp_cache",
+                }],
+            })
+
+    return {
+        "schema_version": 2,
+        "generated_at": "2026-09-03T12:00:00+00:00",
+        "collection_status": "completed",
+        "target": {
+            "cidr": "192.168.77.0/24",
+            "address_count": 256,
+            "host_address_count": 254,
+            "probe_address_count": 253,
+        },
+        "settings": {"timeout_seconds": 0.75, "workers": 16},
+        "authorization": {"scope": "explicitly authorized private IPv4 only"},
+        "summary": {
+            "local_machine": 1,
+            "confirmed_responsive": 9,
+            "known_neighbor": 8,
+            # The responsive gateway remains in its mutually exclusive
+            # responsive classification. Its role is overlapping metadata.
+            "confirmed_gateway": 0,
+            "addresses_probed": 253,
+            "responses_received": 9,
+            "no_response_observed": 244,
+            "probe_timeouts": 0,
+            "probe_unavailable": 0,
+            "probe_errors": 0,
+        },
+        "probe_outcomes": [
+            {
+                "address": address,
+                "status": (
+                    "responsive" if address in responsive_addresses
+                    else "no_response"
+                ),
+            }
+            for address in remote_addresses
+        ],
+        "neighbor_cache": {"status": "available", "detail": None},
+        "default_gateway": {
+            "status": "available",
+            "detail": None,
+            "records": [{"address": "192.168.77.1", "interface": local_address}],
+        },
+        "sources": {
+            "routing_table": {"status": "available", "detail": None},
+            "reachability": {"status": "available", "detail": None},
+            "neighbor_cache": {"status": "available", "detail": None},
+        },
+        "hosts": hosts,
+        "limitations": [
+            "Only ICMP echo replies, local interface data, existing neighbor-cache records, and local default-route records are considered.",
+            "A device is labeled gateway/router only when a local default-route entry confirms it; neighbor/cache and reachability evidence are insufficient.",
+            "A silent or timed-out address may still have a host; no absence claim is made.",
+            "Hostnames are not resolved, and ports and vulnerabilities are not scanned.",
+        ],
+    }
+
+
 class DiscoveryInterpretationTests(unittest.TestCase):
     """The next-move model stays safe, structured, and parser-valid."""
 
@@ -115,6 +229,16 @@ class DiscoveryInterpretationTests(unittest.TestCase):
         self.assertEqual(summary["responsive_devices"], ["192.168.1.2"])
         self.assertEqual(summary["cache_only_devices"], ["192.168.1.3"])
         self.assertEqual(summary["confirmed_in_scope_gateways"], ["192.168.1.4"])
+        self.assertEqual(summary["neighbor_cache_evidence_addresses"], [
+            "192.168.1.3",
+        ])
+        self.assertEqual(summary["evidence_overlap"], {
+            "probe_no_reply_count": 2,
+            "no_reply_with_neighbor_cache_count": 1,
+            "no_reply_with_neighbor_cache_addresses": ["192.168.1.3"],
+            "counts_are_additive": False,
+            "outcomes_available": True,
+        })
         self.assertEqual(summary["collection_errors_or_incomplete_evidence"], {
             "sources": [
                 {"source": "reachability", "status": "partial", "detail": "some probes failed"},
@@ -147,6 +271,11 @@ class DiscoveryInterpretationTests(unittest.TestCase):
             self.assertIn(item["activity_level"], ACTIVITY_LEVELS)
             self.assertIs(item["availability"]["available_now"], True)
         validate_recommendation_commands(recommendations, build_parser().parse_args)
+        json_recommendation = recommendations[3]
+        self.assertIn("Display complete structured evidence", json_recommendation["purpose"])
+        self.assertIn("standard output", json_recommendation["expected_result"])
+        self.assertIn("does not save it automatically", json_recommendation["expected_result"])
+        self.assertNotIn("retain", str(json_recommendation).lower())
 
     def test_recommendations_reject_unsafe_targets_and_non_driftbox_commands(self) -> None:
         unsafe = deepcopy(report())
@@ -199,6 +328,13 @@ class DiscoveryInterpretationTests(unittest.TestCase):
             summary["collection_errors_or_incomplete_evidence"]["outcomes_available"],
             False,
         )
+        self.assertEqual(summary["evidence_overlap"], {
+            "probe_no_reply_count": 0,
+            "no_reply_with_neighbor_cache_count": 0,
+            "no_reply_with_neighbor_cache_addresses": [],
+            "counts_are_additive": False,
+            "outcomes_available": False,
+        })
         self.assertEqual(
             details["collection"]["default_gateway"]["status"],
             "not_collected",
@@ -248,7 +384,13 @@ class DiscoveryInterpretationTests(unittest.TestCase):
             "DETAILED EVIDENCE",
         ):
             self.assertIn(heading, text)
-        self.assertIn("Addresses that did not respond: 2.", text)
+        self.assertIn("Probes that received no reply: 2.", text)
+        self.assertIn(
+            "No-reply/cache overlap: 1 of the 2 addresses without a reply also "
+            "have neighbor/cache evidence; these categories overlap and should "
+            "not be added together.",
+            text,
+        )
         self.assertIn(
             "Addresses that did not respond (terminal preview): 192.168.1.3, 192.168.1.4",
             text,
@@ -265,6 +407,74 @@ class DiscoveryInterpretationTests(unittest.TestCase):
         self.assertIn("Risk/activity: LOCAL READ-ONLY", text)
         self.assertIn("Available now: yes.", text)
         self.assertIn("Discovery does not authorize port scanning", text)
+
+    def test_manual_output_relationships_separate_roles_and_overlap(self) -> None:
+        enriched = with_discovery_interpretation(
+            manual_output_relationship_report()
+        )
+        interpretation = enriched["interpretation"]
+        assert isinstance(interpretation, dict)
+        summary = interpretation["discovery_summary"]
+        recommendations = interpretation["recommendations"]
+        detailed_evidence = interpretation["detailed_evidence"]
+        assert isinstance(summary, dict)
+        assert isinstance(recommendations, list)
+        assert isinstance(detailed_evidence, dict)
+
+        self.assertEqual(summary["positive_host_evidence_count"], 18)
+        self.assertEqual(len(summary["local_computer_addresses"]), 1)
+        self.assertEqual(len(summary["responsive_devices"]), 9)
+        self.assertEqual(len(summary["cache_only_devices"]), 8)
+        self.assertEqual(summary["confirmed_in_scope_gateways"], ["192.168.77.1"])
+        self.assertEqual(len(summary["neighbor_cache_evidence_addresses"]), 9)
+        self.assertEqual(summary["evidence_overlap"], {
+            "probe_no_reply_count": 244,
+            "no_reply_with_neighbor_cache_count": 8,
+            "no_reply_with_neighbor_cache_addresses": [
+                f"192.168.77.{octet}" for octet in range(65, 73)
+            ],
+            "counts_are_additive": False,
+            "outcomes_available": True,
+        })
+        self.assertEqual(len(detailed_evidence["probe_outcomes"]), 253)
+        self.assertEqual(len(detailed_evidence["hosts"]), 18)
+        self.assertTrue(detailed_evidence["limitations"])
+        self.assertTrue(detailed_evidence["cautions"])
+
+        text = format_network_discovery(enriched)
+        self.assertIn(
+            "18 host records: 1 local machine, 9 responsive, 8 cache-only.",
+            text,
+        )
+        self.assertIn(
+            "Confirmed gateway roles: 1 (192.168.77.1); role counts may overlap "
+            "host classifications.",
+            text,
+        )
+        self.assertNotIn("0 configured gateway/router", text)
+        self.assertIn("Probes that received no reply: 244.", text)
+        self.assertIn(
+            "No-reply/cache overlap: 8 of the 244 addresses without a reply also "
+            "have neighbor/cache evidence; these categories overlap and should "
+            "not be added together.",
+            text,
+        )
+        self.assertEqual(
+            text.count("Silence does not prove an address is unused or offline."),
+            1,
+        )
+        self.assertNotIn("Cautions:", text)
+        self.assertNotIn("Next safe step:", text)
+        self.assertEqual(text.count("Privacy:"), 1)
+        self.assertEqual(
+            text.count("Safety boundary: Discovery does not authorize"),
+            1,
+        )
+
+        json_recommendation = recommendations[3]
+        self.assertIn("Display complete structured evidence", json_recommendation["purpose"])
+        self.assertIn("does not save it automatically", json_recommendation["expected_result"])
+        self.assertNotIn("retain", str(json_recommendation).lower())
 
     def test_human_output_bounds_each_address_preview_and_host_table(self) -> None:
         data = report()
@@ -335,7 +545,7 @@ class DiscoveryInterpretationTests(unittest.TestCase):
         self.assertIn("192.168.1.49, and 1 more", text)
         self.assertIn("Confirmed default gateway: 192.168.1.60", text)
         self.assertIn("192.168.1.69, and 1 more", text)
-        self.assertIn("Addresses that did not respond: 12.", text)
+        self.assertIn("Probes that received no reply: 12.", text)
         self.assertIn("Addresses that did not respond (terminal preview): 192.168.1.80", text)
         self.assertIn("192.168.1.89, and 2 more", text)
         self.assertIn("Addresses with unavailable or failed probes: 192.168.1.100", text)

@@ -395,9 +395,9 @@ class DiscoverFormattingTests(unittest.TestCase):
         self.assertIn("ICMP echo reply", text)
         self.assertIn("MAC: aa:bb:cc:dd:ee:02", text)
         self.assertIn("Hostnames: not collected", text)
-        self.assertIn("Silence is inconclusive", text)
+        self.assertIn("Silence does not prove", text)
         self.assertIn("Privacy:", text)
-        self.assertIn("Next safe step:", text)
+        self.assertIn("RECOMMENDED NEXT STEPS", text)
 
     def test_no_positive_evidence_is_not_described_as_no_hosts(self) -> None:
         report = sample_report()

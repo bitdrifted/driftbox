@@ -111,7 +111,8 @@ Positive host evidence: 4 addresses; 1 reply.
 This computer's address: 192.168.1.1
 Devices that responded during the scan: 192.168.1.2
 Devices supported only by neighbor/cache evidence: 192.168.1.3
-Addresses that did not respond: 2.
+Probes that received no reply: 2.
+No-reply/cache overlap: 1 of the 2 addresses without a reply also have neighbor/cache evidence; these categories overlap and should not be added together.
 Confirmed default gateway: 192.168.1.4
 Collection errors or incomplete evidence: reachability=partial (some probes failed); probe issues at 192.168.1.5, 192.168.1.6.
 
@@ -150,28 +151,29 @@ RECOMMENDED NEXT STEPS
    Expected result: JSON containing local system, network, firewall, and listener observations.
    Available now: yes. Review the report before sharing it.
 4. driftbox discover 192.168.1.0/29 --json
-   Purpose: Repeat the same bounded collection and retain structured results.
-   Reason: A later authorized collection can be reviewed for changes in the same scope.
+   Purpose: Display complete structured evidence from a new run of the same bounded collection.
+   Reason: The human view is summarized; JSON displays every per-address outcome in the same reviewed scope.
    Target: 192.168.1.0/29
    Risk/activity: ACTIVE AUTHORIZED SCAN
    Authorization: Explicit authorization to inspect 192.168.1.0/29.
-   Expected result: Schema-versioned JSON with evidence, interpretation, and limitations.
+   Expected result: Schema-versioned JSON is written to standard output; Driftbox does not save it automatically.
    Available now: yes. Run only after reconfirming authorization for this exact CIDR.
 
 DETAILED EVIDENCE
 -----------------
-Terminal previews show at most 10 addresses or host rows. For complete structured evidence from a newly authorized collection, use: driftbox discover 192.168.1.0/29 --json
+Terminal previews show at most 10 addresses or host rows. To display complete structured evidence from a newly authorized collection, use: driftbox discover 192.168.1.0/29 --json. JSON is written to standard output and is not saved automatically.
 ADDRESS         CLASSIFICATION              EVIDENCE
 --------------- --------------------------- --------------------------------
 192.168.1.1     local machine               local interface address (source: local interface data)
 192.168.1.2     confirmed responsive        ICMP echo reply (source: system ping)
 192.168.1.3     locally known neighbor      neighbor/cache entry (source: ARP cache)
-192.168.1.4     configured gateway/router   configured default-gateway route (source: local routing table, interface: eth0)
+192.168.1.4     routing evidence only       configured default-gateway route (source: local routing table, interface: eth0)
 
+4 host records: 1 local machine, 1 responsive, 1 cache-only, 1 routing-evidence-only.
+Confirmed gateway roles: 1 (192.168.1.4); role counts may overlap host classifications.
 Probe outcomes (aggregated): 5 attempted; 1 reply; 1 without an observed reply; 1 timed out; 1 unavailable; 1 error.
 Neighbor/cache evidence: available.
 Hostnames: not collected (unavailable metadata; reverse DNS is disabled).
-Silence is inconclusive and never means that a host does not exist.
 Addresses that did not respond (terminal preview): 192.168.1.3, 192.168.1.4
 ```
 
@@ -180,10 +182,11 @@ and the host-evidence table shows at most 10 items, followed by `and N more`
 when additional evidence exists. The summary always states the silent-address
 count, while detailed evidence aggregates probe outcomes. To collect complete
 schema-versioned JSON for an explicitly authorized CIDR, use
-`driftbox discover CIDR --json`; that new collection retains all evidence rather
-than the terminal preview. This change follows a real, explicitly authorized
-user test in which a `/24` discovery completed successfully but the old default
-output exceeded the terminal capture buffer by enumerating silent addresses.
+`driftbox discover CIDR --json`; the command displays every per-address outcome
+on standard output but does not save it automatically. This change follows a
+real, explicitly authorized user test in which a `/24` discovery completed
+successfully but the old default output exceeded the terminal capture buffer by
+enumerating silent addresses.
 The defect was found before PR #17 was merged; the human view is now bounded
 while schema-v2 JSON remains complete.
 
@@ -194,13 +197,18 @@ show default` on Linux, `route print -4` on Windows, and `route -n get default`
 on macOS. A host is labeled `gateway_router` only when a parsed default-route
 record names its address inside the inspected CIDR. Ping responses, neighbor
 records, address position, and common `.1` conventions never assign that role.
+Human output reports mutually exclusive host-evidence classifications separately
+from gateway roles. A confirmed gateway role can overlap a local, responsive, or
+cache-based classification and therefore never adds another host record.
 
 Discovery does not require administrator privileges or raw sockets. Results
 distinguish the local machine, a confirmed responsive host, a cache-only host,
 and a configured default-route next hop. A cache entry is historical local
 evidence, not proof that a device is currently online. A silent target may block
 ICMP, be asleep, or be absent; Driftbox never claims that silence proves a host
-does not exist. Reverse DNS remains disabled, so hostnames cannot expand the
+does not exist. The summary explicitly reports how many no-reply addresses also
+have neighbor/cache evidence because those categories overlap and must not be
+added together. Reverse DNS remains disabled, so hostnames cannot expand the
 reviewed numeric scope or trigger external DNS traffic.
 
 The Next Move Engine is deterministic and offline. It recommends only commands
@@ -219,15 +227,19 @@ seconds; values beyond those limits are safely clamped. Driftbox refuses targets
 larger than 256 total addresses. Work is bounded and output is sorted by numeric
 address, but operating-system scheduling means overall run time can still vary.
 
-`--json` writes discovery schema version 2. Version 2 deliberately adds ordered
+`--json` displays discovery schema version 2 on standard output and does not
+persist it automatically. Version 2 deliberately adds ordered
 `probe_outcomes`, `default_gateway`, `sources.routing_table`, route evidence and
 the optional `confirmed_gateway` host status, plus the top-level
 `interpretation` object. Existing fields retain their meanings. The nested
 interpretation schema starts at version 1 and contains `discovery_summary`,
 `what_this_means`, `recommendations`, and `detailed_evidence`. Consumers must
-check both schema versions and tolerate additive fields. Older schema-v1
-discovery data can still be interpreted, but address-level negative outcomes and
-gateway evidence are reported as not collected rather than reconstructed.
+check both schema versions and tolerate additive fields. The interpretation's
+additive `neighbor_cache_evidence_addresses` and `evidence_overlap` fields expose
+the complete no-reply/cache relationship without changing either schema version.
+Older schema-v1 discovery data can still be interpreted, but address-level
+negative outcomes and gateway evidence are reported as not collected rather
+than reconstructed.
 
 `collection_status` keeps its established reachability/neighbor semantics so
 existing exit codes do not change. A routing-table failure is instead explicit

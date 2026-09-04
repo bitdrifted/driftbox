@@ -143,6 +143,15 @@ class MaximumSubnetDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(discovery_summary["cache_only_devices"]), 64)
         self.assertEqual(len(discovery_summary["addresses_without_response"]), 160)
         self.assertEqual(len(discovery_summary["addresses_with_probe_errors"]), 30)
+        self.assertEqual(discovery_summary["evidence_overlap"], {
+            "probe_no_reply_count": 160,
+            "no_reply_with_neighbor_cache_count": 64,
+            "no_reply_with_neighbor_cache_addresses": [
+                f"192.168.50.{octet}" for octet in range(65, 129)
+            ],
+            "counts_are_additive": False,
+            "outcomes_available": True,
+        })
         self.assertEqual(len(detailed_evidence["probe_outcomes"]), 254)
         self.assertEqual(len(detailed_evidence["hosts"]), 128)
 
@@ -160,7 +169,7 @@ class MaximumSubnetDiscoveryTests(unittest.TestCase):
         cache_line = line_starting(
             "Devices supported only by neighbor/cache evidence:"
         )
-        silent_summary_line = line_starting("Addresses that did not respond:")
+        silent_summary_line = line_starting("Probes that received no reply:")
         silent_preview_line = line_starting(
             "Addresses that did not respond (terminal preview):"
         )
@@ -169,15 +178,26 @@ class MaximumSubnetDiscoveryTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "Evidence summary: 128 host(s) recorded (0 local machine, 64 confirmed responsive, 64 locally known neighbor, 0 configured gateway/router).",
+            "128 host records: 0 local machine, 64 responsive, 64 cache-only.",
+            text,
+        )
+        self.assertIn(
+            "Confirmed gateway roles: 0 (none recorded); role counts may overlap "
+            "host classifications.",
             text,
         )
         self.assertIn(
             "Probe outcomes (aggregated): 254 attempted; 64 replies; 128 without an observed reply; 32 timed out; 0 unavailable; 30 errors.",
             text,
         )
-        self.assertEqual(silent_summary_line, "Addresses that did not respond: 160.")
+        self.assertEqual(silent_summary_line, "Probes that received no reply: 160.")
         self.assertNotRegex(silent_summary_line, r"192\.168\.50\.\d+")
+        self.assertIn(
+            "No-reply/cache overlap: 64 of the 160 addresses without a reply "
+            "also have neighbor/cache evidence; these categories overlap and "
+            "should not be added together.",
+            text,
+        )
         self.assertEqual(len(re.findall(r"192\.168\.50\.\d+", responsive_line)), 10)
         self.assertTrue(responsive_line.endswith("192.168.50.10, and 54 more"))
         self.assertEqual(len(re.findall(r"192\.168\.50\.\d+", cache_line)), 10)
@@ -189,7 +209,7 @@ class MaximumSubnetDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(host_rows), MAX_HUMAN_HOST_ROWS)
         self.assertIn("... and 118 more host evidence rows.", text)
         self.assertIn("driftbox discover 192.168.50.0/24 --json", text)
-        self.assertIn("Silence is inconclusive and never means that a host does not exist.", text)
+        self.assertIn("Silence does not prove an address is unused or offline.", text)
         self.assertLessEqual(max(map(len, lines)), MAX_HUMAN_LINE_CHARS)
         self.assertLessEqual(len(text), MAX_HUMAN_OUTPUT_CHARS)
 

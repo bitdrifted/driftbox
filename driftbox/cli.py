@@ -687,7 +687,7 @@ _DISCOVERY_STATUS_LABELS = {
     "local_machine": "local machine",
     "confirmed_responsive": "confirmed responsive",
     "known_neighbor": "locally known neighbor",
-    "confirmed_gateway": "configured gateway/router",
+    "confirmed_gateway": "routing evidence only",
 }
 
 _DISCOVERY_EVIDENCE_LABELS = {
@@ -780,6 +780,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
     responsive_devices = discovery_summary.get("responsive_devices", [])
     cache_only_devices = discovery_summary.get("cache_only_devices", [])
     confirmed_gateways = discovery_summary.get("confirmed_in_scope_gateways", [])
+    evidence_overlap = discovery_summary.get("evidence_overlap", {})
     incomplete_evidence = detailed_evidence.get("incomplete_evidence", {})
     collection_issues = discovery_summary.get("collection_errors_or_incomplete_evidence", {})
     if not all(
@@ -798,6 +799,8 @@ def format_network_discovery(report: dict[str, object]) -> str:
         raise ValueError("Discovery interpretation incomplete evidence is malformed.")
     if not isinstance(collection_issues, dict):
         raise ValueError("Discovery interpretation collection issues are malformed.")
+    if not isinstance(evidence_overlap, dict):
+        raise ValueError("Discovery interpretation overlap evidence is malformed.")
     source_issues = collection_issues.get("sources", [])
     if not isinstance(source_issues, list):
         raise ValueError("Discovery interpretation source issues are malformed.")
@@ -826,6 +829,11 @@ def format_network_discovery(report: dict[str, object]) -> str:
     positive_label = "address" if positive_count == 1 else "addresses"
     error_count = int(summary.get("probe_errors", 0))
     error_label = "error" if error_count == 1 else "errors"
+    no_reply_count = int(evidence_overlap.get("probe_no_reply_count", 0))
+    no_reply_cache_count = int(
+        evidence_overlap.get("no_reply_with_neighbor_cache_count", 0)
+    )
+    no_reply_label = "address" if no_reply_count == 1 else "addresses"
     target_cidr = discovery_summary.get("target_cidr")
     if not isinstance(target_cidr, str):
         raise ValueError("Discovery interpretation target is malformed.")
@@ -865,7 +873,17 @@ def format_network_discovery(report: dict[str, object]) -> str:
             f"{_format_bounded_discovery_items(cache_only_devices)}"
         ),
         (
-            f"Addresses that did not respond: {len(addresses_without_response)}."
+            f"Probes that received no reply: {no_reply_count}."
+        ),
+        *(
+            [
+                "No-reply/cache overlap: "
+                f"{no_reply_cache_count} of the {no_reply_count} {no_reply_label} "
+                "without a reply also have neighbor/cache evidence; these categories "
+                "overlap and should not be added together."
+            ]
+            if no_reply_count
+            else []
         ),
         (
             "Confirmed default gateway: "
@@ -917,9 +935,10 @@ def format_network_discovery(report: dict[str, object]) -> str:
     lines.extend(["", "DETAILED EVIDENCE", "-----------------"])
     lines.append(
         "Terminal previews show at most "
-        f"{_HUMAN_DISCOVERY_ITEM_LIMIT} addresses or host rows. For complete "
+        f"{_HUMAN_DISCOVERY_ITEM_LIMIT} addresses or host rows. To display complete "
         f"structured evidence from a newly authorized collection, use: "
-        f"driftbox discover {target_cidr} --json"
+        f"driftbox discover {target_cidr} --json. JSON is written to standard "
+        "output and is not saved automatically."
     )
 
     if hosts:
@@ -947,24 +966,37 @@ def format_network_discovery(report: dict[str, object]) -> str:
     else:
         lines.append("No positive host evidence was collected.")
 
-    total_hosts = sum(
-        int(summary.get(key, 0))
-        for key in (
-            "local_machine",
-            "confirmed_responsive",
-            "known_neighbor",
-            "confirmed_gateway",
-        )
+    local_host_count = int(summary.get("local_machine", 0))
+    responsive_host_count = int(summary.get("confirmed_responsive", 0))
+    cache_host_count = int(summary.get("known_neighbor", 0))
+    routing_only_host_count = int(summary.get("confirmed_gateway", 0))
+    total_hosts = (
+        local_host_count
+        + responsive_host_count
+        + cache_host_count
+        + routing_only_host_count
     )
+    host_record_label = "host record" if total_hosts == 1 else "host records"
+    host_classifications = (
+        f"{local_host_count} local machine, "
+        f"{responsive_host_count} responsive, "
+        f"{cache_host_count} cache-only"
+    )
+    if routing_only_host_count:
+        host_classifications += (
+            f", {routing_only_host_count} routing-evidence-only"
+        )
+    gateway_role_count = len(confirmed_gateways)
     lines.extend(
         [
             "",
             (
-                f"Evidence summary: {total_hosts} host(s) recorded "
-                f"({summary.get('local_machine', 0)} local machine, "
-                f"{summary.get('confirmed_responsive', 0)} confirmed responsive, "
-                f"{summary.get('known_neighbor', 0)} locally known neighbor, "
-                f"{summary.get('confirmed_gateway', 0)} configured gateway/router)."
+                f"{total_hosts} {host_record_label}: {host_classifications}."
+            ),
+            (
+                f"Confirmed gateway roles: {gateway_role_count} "
+                f"({_format_bounded_discovery_items(confirmed_gateways)}); "
+                "role counts may overlap host classifications."
             ),
             (
                 f"Probe outcomes (aggregated): {summary.get('addresses_probed', 0)} attempted; "
@@ -985,7 +1017,6 @@ def format_network_discovery(report: dict[str, object]) -> str:
                 + "."
             ),
             "Hostnames: not collected (unavailable metadata; reverse DNS is disabled).",
-            "Silence is inconclusive and never means that a host does not exist.",
             (
                 "Addresses that did not respond (terminal preview): "
                 f"{_format_bounded_discovery_items(addresses_without_response)}"
@@ -1010,9 +1041,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
             "Privacy: review this private network inventory before storing or sharing it.",
             "Limitations:",
             *(f"- {item}" for item in limitations),
-            "Cautions:",
-            *(f"- {item}" for item in detailed_evidence.get("cautions", [])),
-            "Next safe step: verify authorization before any additional active collection.",
+            "Safety boundary: Discovery does not authorize port scanning or any other additional network activity.",
         ]
     )
     return "\n".join(lines)

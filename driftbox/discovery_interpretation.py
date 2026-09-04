@@ -138,6 +138,7 @@ def _host_address_categories(
         "local_computer_addresses": [],
         "responsive_devices": [],
         "cache_only_devices": [],
+        "neighbor_cache_evidence_addresses": [],
         "confirmed_in_scope_gateways": [],
     }
     for item in hosts:
@@ -176,6 +177,8 @@ def _host_address_categories(
             and not has_gateway_evidence
         ):
             categories["cache_only_devices"].append(text)
+        if has_neighbor_evidence:
+            categories["neighbor_cache_evidence_addresses"].append(text)
         # A status or role label alone is not enough.  The supporting local
         # default-route record is the sole evidence that confirms this role.
         if has_gateway_evidence:
@@ -270,14 +273,14 @@ def _recommendations(cidr: str) -> list[dict[str, object]]:
             identifier="repeat-authorized-discovery-json",
             rank=4,
             command=f"driftbox discover {cidr} --json",
-            purpose="Repeat the same bounded host-evidence collection and retain structured results.",
-            reason="A later authorized collection can be compared manually for changes while preserving the original, reviewed scope.",
+            purpose="Display complete structured evidence from a new run of the same bounded host-evidence collection.",
+            reason="The human view is summarized; JSON displays every per-address outcome in the same reviewed scope.",
             target=cidr,
             activity_level="ACTIVE AUTHORIZED SCAN",
             authorization_required=(
                 f"Explicit authorization to inspect {cidr}; confirm ownership or permission immediately before running it."
             ),
-            expected_result="A schema-versioned JSON discovery report with positive host evidence and collection limitations.",
+            expected_result="Schema-versioned JSON is written to standard output; Driftbox does not save it automatically.",
             available_now=True,
             availability_status="available",
             availability_condition="The command exists now, but run it only with explicit authorization for the exact private CIDR shown above.",
@@ -323,6 +326,12 @@ def build_discovery_interpretation(report: Mapping[str, object]) -> dict[str, ob
         for outcome in probe_outcomes
         if outcome["status"] in {"unavailable", "error"}
     ]
+    no_reply_addresses = set(addresses_without_response)
+    no_reply_with_neighbor_cache = [
+        address
+        for address in host_categories["neighbor_cache_evidence_addresses"]
+        if address in no_reply_addresses
+    ]
     incomplete_sources = _incomplete_sources(sources)
 
     host_count = sum(
@@ -335,12 +344,9 @@ def build_discovery_interpretation(report: Mapping[str, object]) -> dict[str, ob
         )
     )
     responses = _integer(summary.get("responses_received", 0), "summary.responses_received")
-    no_response = _integer(summary.get("no_response_observed", 0), "summary.no_response_observed")
     collection_status = str(report.get("collection_status", "unavailable"))
-    evidence_label = "address" if host_count == 1 else "addresses"
 
     meaning = [
-        f"Collection status is {collection_status}. {host_count} {evidence_label} have positive host evidence in {cidr}.",
         "A response proves only that the device answered at scan time.",
         "Cache evidence means this computer has seen the device, not necessarily that it is currently online.",
         "Silence does not prove an address is unused or offline.",
@@ -348,11 +354,6 @@ def build_discovery_interpretation(report: Mapping[str, object]) -> dict[str, ob
         "Unknown devices are not automatically suspicious or malicious.",
         "A confirmed gateway is only a local default-route next hop; it does not establish wider routing, identity, or reachability.",
     ]
-    if no_response:
-        no_response_label = "address" if no_response == 1 else "addresses"
-        meaning.append(
-            f"{no_response} {no_response_label} had no observed reply. Silence is inconclusive and does not prove that a host is absent."
-        )
     if collection_status != "completed":
         meaning.append(
             "Some collection sources were unavailable or incomplete, so interpret the positive evidence with the listed limitations."
@@ -369,6 +370,17 @@ def build_discovery_interpretation(report: Mapping[str, object]) -> dict[str, ob
             **host_categories,
             "addresses_without_response": addresses_without_response,
             "addresses_with_probe_errors": addresses_with_probe_errors,
+            "evidence_overlap": {
+                "probe_no_reply_count": len(addresses_without_response),
+                "no_reply_with_neighbor_cache_count": len(
+                    no_reply_with_neighbor_cache
+                ),
+                "no_reply_with_neighbor_cache_addresses": (
+                    no_reply_with_neighbor_cache
+                ),
+                "counts_are_additive": False,
+                "outcomes_available": "probe_outcomes" in report,
+            },
             "collection_errors_or_incomplete_evidence": {
                 "sources": deepcopy(incomplete_sources),
                 "addresses_with_probe_errors": addresses_with_probe_errors,
