@@ -13,6 +13,8 @@ from unittest.mock import Mock, patch
 from driftbox.network_discovery import (
     CandidateSelectionRequired,
     DiscoveryOperationalError,
+    GatewayRecord,
+    GatewaySnapshot,
     MAX_TARGET_ADDRESSES,
     MAX_TIMEOUT_SECONDS,
     MAX_WORKERS,
@@ -32,6 +34,9 @@ from driftbox.network_discovery import (
     discover_network,
     parse_arp_output,
     parse_ip_neighbor_output,
+    parse_linux_default_route_output,
+    parse_macos_default_route_output,
+    parse_windows_default_route_output,
     resolve_target,
     validate_target,
 )
@@ -64,11 +69,14 @@ class FakeAdapter:
         self,
         outcomes: dict[str, ProbeResult] | None = None,
         neighbors: NeighborSnapshot | None = None,
+        gateways: GatewaySnapshot | None = None,
     ) -> None:
         self.outcomes = outcomes or {}
         self.snapshot = neighbors or NeighborSnapshot("available")
         self.ping_calls: list[tuple[str, float]] = []
         self.neighbor_calls: list[float] = []
+        self.gateway_snapshot = gateways or GatewaySnapshot("available")
+        self.gateway_calls: list[float] = []
 
     def ping(
         self,
@@ -81,6 +89,10 @@ class FakeAdapter:
     def neighbors(self, timeout_seconds: float) -> NeighborSnapshot:
         self.neighbor_calls.append(timeout_seconds)
         return self.snapshot
+
+    def default_gateways(self, timeout_seconds: float) -> GatewaySnapshot:
+        self.gateway_calls.append(timeout_seconds)
+        return self.gateway_snapshot
 
 
 class TargetValidationTests(unittest.TestCase):
@@ -334,6 +346,51 @@ class NeighborParsingTests(unittest.TestCase):
         self.assertEqual(parse_arp_output(output), [])
 
 
+class GatewayParsingTests(unittest.TestCase):
+    """Only explicit default-route records may identify a gateway/router."""
+
+    def test_linux_default_routes_are_private_deduplicated_and_ordered(self) -> None:
+        output = "\n".join((
+            "default via 192.168.1.254 dev wlan0 proto dhcp metric 600",
+            "default via 10.0.0.1 dev eth0 proto dhcp metric 100",
+            "default via 10.0.0.1 dev eth0 proto dhcp metric 100",
+            "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.4",
+            "default via 8.8.8.8 dev eth9 metric 1",
+            "default via 127.0.0.1 dev lo metric 1",
+        ))
+        result = parse_linux_default_route_output(output)
+        self.assertEqual([(str(item.address), item.interface, item.metric) for item in result], [
+            ("10.0.0.1", "eth0", 100),
+            ("192.168.1.254", "wlan0", 600),
+        ])
+
+    def test_windows_default_routes_require_all_ipv4_route_columns(self) -> None:
+        output = "\n".join((
+            "Network Destination        Netmask          Gateway       Interface  Metric",
+            "          0.0.0.0          0.0.0.0    192.168.1.1   192.168.1.10     25",
+            "          0.0.0.0          0.0.0.0        On-link      10.0.0.2     25",
+            "          0.0.0.0          0.0.0.0    192.168.1.2   192.168.1.10     nope",
+            "          0.0.0.0        255.0.0.0    192.168.1.3   192.168.1.10     25",
+        ))
+        result = parse_windows_default_route_output(output)
+        self.assertEqual([(str(item.address), item.interface, item.metric) for item in result], [
+            ("192.168.1.1", "192.168.1.10", 25),
+        ])
+
+    def test_macos_default_route_requires_gateway_field_and_ignores_public(self) -> None:
+        self.assertEqual(
+            parse_macos_default_route_output(
+                "   route to: default\n destination: default\n    gateway: 192.168.1.1\n  interface: en0\n"
+            ),
+            [GatewayRecord(ipaddress.IPv4Address("192.168.1.1"), "en0", None)],
+        )
+        self.assertEqual(parse_macos_default_route_output("interface: en0\n"), [])
+        self.assertEqual(
+            parse_macos_default_route_output("gateway: 8.8.8.8\ninterface: en0\n"),
+            [],
+        )
+
+
 class SystemAdapterTests(unittest.TestCase):
     """Platform commands must be fixed argv with Python-enforced deadlines."""
 
@@ -464,6 +521,54 @@ class SystemAdapterTests(unittest.TestCase):
         self.assertEqual(snapshot.status, "unavailable")
         runner.assert_not_called()
 
+    def test_default_gateway_commands_are_fixed_read_only_argv_per_platform(self) -> None:
+        cases = (
+            ("Linux", ["ip", "-4", "route", "show", "default"],
+             "default via 192.168.1.1 dev eth0 metric 100"),
+            ("Windows", ["route", "print", "-4"],
+             "0.0.0.0 0.0.0.0 192.168.1.1 192.168.1.10 25"),
+            ("Darwin", ["route", "-n", "get", "default"],
+             "gateway: 192.168.1.1\ninterface: en0"),
+        )
+        for system_name, expected_argv, output in cases:
+            with self.subTest(system_name=system_name):
+                runner = Mock(return_value=subprocess.CompletedProcess([], 0, output, ""))
+                snapshot = SystemNetworkAdapter(
+                    system_name=system_name, runner=runner
+                ).default_gateways(0.3)
+                self.assertEqual(snapshot.status, "available")
+                self.assertEqual(str(snapshot.records[0].address), "192.168.1.1")
+                runner.assert_called_once_with(
+                    expected_argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=0.3,
+                    check=False,
+                    shell=False,
+                )
+
+    def test_gateway_command_errors_are_structured_and_unsupported_never_runs(self) -> None:
+        missing = SystemNetworkAdapter(
+            system_name="Linux", runner=Mock(side_effect=FileNotFoundError())
+        ).default_gateways(0.2)
+        timed_out = SystemNetworkAdapter(
+            system_name="Windows",
+            runner=Mock(side_effect=subprocess.TimeoutExpired(["route"], 0.2)),
+        ).default_gateways(0.2)
+        failed = SystemNetworkAdapter(
+            system_name="Darwin",
+            runner=Mock(return_value=subprocess.CompletedProcess([], 1, "", "denied")),
+        ).default_gateways(0.2)
+        unknown_runner = Mock()
+        unknown = SystemNetworkAdapter(
+            system_name="Plan9", runner=unknown_runner
+        ).default_gateways(0.2)
+        self.assertEqual(
+            (missing.status, timed_out.status, failed.status, unknown.status),
+            ("unavailable", "timeout", "unavailable", "unavailable"),
+        )
+        unknown_runner.assert_not_called()
+
 
 class DiscoveryOrchestrationTests(unittest.TestCase):
     """Discovery reports only positive evidence and remains deterministic."""
@@ -493,6 +598,7 @@ class DiscoveryOrchestrationTests(unittest.TestCase):
             "local_machine": 0,
             "confirmed_responsive": 1,
             "known_neighbor": 0,
+            "confirmed_gateway": 0,
             "addresses_probed": 6,
             "responses_received": 1,
             "no_response_observed": 2,
@@ -623,7 +729,7 @@ class DiscoveryOrchestrationTests(unittest.TestCase):
             local_addresses=[],
             generated_at="2026-09-03T12:00:00+00:00",
         )
-        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["schema_version"], 2)
         self.assertEqual(report["generated_at"], "2026-09-03T12:00:00+00:00")
         self.assertEqual([host["address"] for host in report["hosts"]], [
             "192.168.1.2", "192.168.1.10",
@@ -697,6 +803,124 @@ class DiscoveryOrchestrationTests(unittest.TestCase):
         self.assertEqual(report["target"]["address_count"], 4)
         self.assertEqual(report["target"]["host_address_count"], 2)
         self.assertEqual(report["target"]["probe_address_count"], 2)
+
+    def test_route_only_gateway_becomes_a_host_with_confirmed_routing_evidence(self) -> None:
+        adapter = FakeAdapter(gateways=GatewaySnapshot("available", records=(
+            GatewayRecord(ipaddress.IPv4Address("192.168.1.1"), "eth0", 100),
+        )))
+        report = discover_network(
+            "192.168.1.0/30", adapter=adapter, local_addresses=[], generated_at="fixed"
+        )
+        self.assertEqual(adapter.gateway_calls, [0.75])
+        self.assertEqual(report["summary"]["confirmed_gateway"], 1)
+        self.assertEqual(report["hosts"], [{
+            "address": "192.168.1.1",
+            "status": "confirmed_gateway",
+            "device_role": "gateway_router",
+            "evidence": [{
+                "kind": "default_gateway_route",
+                "source": "routing_table",
+                "interface": "eth0",
+                "metric": 100,
+            }],
+            "metadata": {"hostname": {
+                "value": None,
+                "status": "not_collected",
+                "reason": "Reverse DNS is intentionally disabled.",
+            }},
+        }])
+        self.assertEqual(report["default_gateway"], {
+            "status": "available",
+            "detail": None,
+            "records": [{"address": "192.168.1.1", "interface": "eth0", "metric": 100}],
+        })
+
+    def test_neighbor_or_ping_evidence_never_assigns_gateway_role(self) -> None:
+        adapter = FakeAdapter(
+            {"10.0.0.1": ProbeResult("responsive")},
+            NeighborSnapshot("available", records=(
+                NeighborRecord(ipaddress.IPv4Address("10.0.0.2"), "arp_cache"),
+            )),
+        )
+        report = discover_network(
+            "10.0.0.0/30", adapter=adapter, local_addresses=[], generated_at="fixed"
+        )
+        self.assertEqual([host["status"] for host in report["hosts"]], [
+            "confirmed_responsive", "known_neighbor",
+        ])
+        self.assertTrue(all("device_role" not in host for host in report["hosts"]))
+
+    def test_responsive_gateway_keeps_liveness_and_route_role_separate(self) -> None:
+        adapter = FakeAdapter(
+            {"10.0.0.1": ProbeResult("responsive")},
+            gateways=GatewaySnapshot("available", records=(
+                GatewayRecord(ipaddress.IPv4Address("10.0.0.1"), "eth0", 10),
+            )),
+        )
+        report = discover_network(
+            "10.0.0.1/32", adapter=adapter, local_addresses=[], generated_at="fixed"
+        )
+        host = report["hosts"][0]
+        self.assertEqual(host["status"], "confirmed_responsive")
+        self.assertEqual(host["device_role"], "gateway_router")
+        self.assertEqual(
+            [item["kind"] for item in host["evidence"]],
+            ["icmp_echo_reply", "default_gateway_route"],
+        )
+
+    def test_gateway_evidence_is_scoped_deterministic_and_does_not_change_collection_status(self) -> None:
+        gateways = GatewaySnapshot("available", records=(
+            GatewayRecord(ipaddress.IPv4Address("192.168.2.1"), "eth1", 50),
+            GatewayRecord(ipaddress.IPv4Address("192.168.1.2"), "eth0", 200),
+            GatewayRecord(ipaddress.IPv4Address("192.168.1.1"), "eth0", 100),
+        ))
+        report = discover_network(
+            "192.168.1.0/30",
+            adapter=FakeAdapter(gateways=gateways),
+            local_addresses=[],
+            generated_at="fixed",
+        )
+        self.assertEqual(report["collection_status"], "completed")
+        self.assertEqual([host["address"] for host in report["hosts"]], [
+            "192.168.1.1", "192.168.1.2",
+        ])
+        self.assertEqual(report["default_gateway"]["records"], [
+            {"address": "192.168.1.1", "interface": "eth0", "metric": 100},
+            {"address": "192.168.1.2", "interface": "eth0", "metric": 200},
+        ])
+
+    def test_gateway_adapter_failure_is_structured_without_changing_exit_collection_semantics(self) -> None:
+        class GatewayFailureAdapter(FakeAdapter):
+            def default_gateways(self, timeout_seconds: float) -> GatewaySnapshot:
+                raise RuntimeError("adapter defect")
+
+        report = discover_network(
+            "192.168.1.0/30",
+            adapter=GatewayFailureAdapter(),
+            local_addresses=[],
+            generated_at="fixed",
+        )
+        self.assertEqual(report["collection_status"], "completed")
+        self.assertEqual(report["default_gateway"], {
+            "status": "error",
+            "detail": "The routing-table adapter failed.",
+            "records": [],
+        })
+        self.assertEqual(report["sources"]["routing_table"]["status"], "error")
+
+    def test_gateway_records_from_failed_snapshot_cannot_assign_a_role(self) -> None:
+        report = discover_network(
+            "192.168.1.1/32",
+            adapter=FakeAdapter(gateways=GatewaySnapshot(
+                "error",
+                records=(GatewayRecord(ipaddress.IPv4Address("192.168.1.1")),),
+                detail="contradictory custom adapter",
+            )),
+            local_addresses=[],
+            generated_at="fixed",
+        )
+        self.assertEqual(report["hosts"], [])
+        self.assertEqual(report["default_gateway"]["records"], [])
 
 
 if __name__ == "__main__":

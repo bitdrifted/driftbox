@@ -24,7 +24,10 @@ from typing import Callable, Iterable, Mapping, Protocol, Sequence
 import psutil
 
 
-SCHEMA_VERSION = 1
+# Version 2 adds ordered per-address probe outcomes and an explicitly scoped,
+# read-only default-gateway evidence source.  Host reachability semantics remain
+# unchanged.
+SCHEMA_VERSION = 2
 MAX_TARGET_ADDRESSES = 256
 
 MIN_WORKERS = 1
@@ -147,6 +150,28 @@ class NeighborSnapshot:
             raise ValueError(f"Unsupported neighbor snapshot status: {self.status}")
 
 
+@dataclass(frozen=True)
+class GatewayRecord:
+    """A default gateway explicitly reported by the local routing table."""
+
+    address: ipaddress.IPv4Address
+    interface: str | None = None
+    metric: int | None = None
+
+
+@dataclass(frozen=True)
+class GatewaySnapshot:
+    """Default-route records and availability of their local collection."""
+
+    status: str
+    records: tuple[GatewayRecord, ...] = ()
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"available", "unavailable", "error", "timeout"}:
+            raise ValueError(f"Unsupported gateway snapshot status: {self.status}")
+
+
 class DiscoveryAdapter(Protocol):
     """Testable boundary around operating-system network commands."""
 
@@ -159,6 +184,9 @@ class DiscoveryAdapter(Protocol):
 
     def neighbors(self, timeout_seconds: float) -> NeighborSnapshot:
         """Read locally cached neighbor evidence without sending traffic."""
+
+    def default_gateways(self, timeout_seconds: float) -> GatewaySnapshot:
+        """Read locally configured default routes without sending traffic."""
 
 
 CompletedCommand = subprocess.CompletedProcess[str]
@@ -450,6 +478,105 @@ def parse_arp_output(output: str) -> list[NeighborRecord]:
     return _deduplicate_neighbors(records)
 
 
+def _gateway_record(
+    address_text: str,
+    *,
+    interface: str | None = None,
+    metric_text: str | None = None,
+) -> GatewayRecord | None:
+    """Build a reportable gateway record without accepting non-local scope."""
+    try:
+        address = ipaddress.IPv4Address(address_text)
+    except ipaddress.AddressValueError:
+        return None
+    # Discovery remains strictly private/local.  A route to a public next hop is
+    # not host evidence and must never expand the collection scope.
+    if not _is_allowed_address(address) or address.is_loopback:
+        return None
+    metric: int | None = None
+    if metric_text is not None:
+        if not metric_text.isdecimal():
+            return None
+        metric = int(metric_text)
+    cleaned_interface = interface.strip() if interface and interface.strip() else None
+    if cleaned_interface and any(
+        ord(character) < 32 or ord(character) == 127
+        for character in cleaned_interface
+    ):
+        cleaned_interface = None
+    return GatewayRecord(address, cleaned_interface, metric)
+
+
+def _deduplicate_gateways(records: Iterable[GatewayRecord]) -> list[GatewayRecord]:
+    """Return stable routing evidence without relying on command output order."""
+    unique = {
+        (record.address, record.interface, record.metric): record for record in records
+    }
+    return sorted(
+        unique.values(),
+        key=lambda item: (int(item.address), item.interface or "", item.metric or -1),
+    )
+
+
+def parse_linux_default_route_output(output: str) -> list[GatewayRecord]:
+    """Parse only ``ip -4 route show default`` records with an IPv4 next hop."""
+    records: list[GatewayRecord] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if not fields or fields[0] != "default":
+            continue
+        lowered = [field.lower() for field in fields]
+        if "via" not in lowered or "dev" not in lowered:
+            continue
+        via_index = lowered.index("via") + 1
+        dev_index = lowered.index("dev") + 1
+        if via_index >= len(fields) or dev_index >= len(fields):
+            continue
+        metric_text = None
+        if "metric" in lowered:
+            metric_index = lowered.index("metric") + 1
+            if metric_index >= len(fields):
+                continue
+            metric_text = fields[metric_index]
+        record = _gateway_record(
+            fields[via_index], interface=fields[dev_index], metric_text=metric_text
+        )
+        if record is not None:
+            records.append(record)
+    return _deduplicate_gateways(records)
+
+
+def parse_windows_default_route_output(output: str) -> list[GatewayRecord]:
+    """Parse IPv4 default rows from ``route print -4`` conservatively."""
+    records: list[GatewayRecord] = []
+    for line in output.splitlines():
+        fields = line.split()
+        # The IPv4 Active Routes table uses destination, mask, gateway,
+        # interface, metric.  Requiring all five prevents header/prose matches.
+        if len(fields) != 5 or fields[0] != "0.0.0.0" or fields[1] != "0.0.0.0":
+            continue
+        record = _gateway_record(
+            fields[2], interface=fields[3], metric_text=fields[4]
+        )
+        if record is not None:
+            records.append(record)
+    return _deduplicate_gateways(records)
+
+
+def parse_macos_default_route_output(output: str) -> list[GatewayRecord]:
+    """Parse the structured IPv4 fields from ``route -n get default``."""
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        match = re.match(r"^\s*(gateway|interface):\s*(\S+)\s*$", line, re.IGNORECASE)
+        if match is not None:
+            values[match.group(1).lower()] = match.group(2)
+    gateway = values.get("gateway")
+    if gateway is None:
+        return []
+    record = _gateway_record(gateway, interface=values.get("interface"))
+    return [] if record is None else [record]
+
+
 def _deduplicate_neighbors(records: Iterable[NeighborRecord]) -> list[NeighborRecord]:
     unique: dict[
         tuple[ipaddress.IPv4Address, str, str | None, str | None], NeighborRecord
@@ -580,6 +707,56 @@ class SystemNetworkAdapter:
         )
         return NeighborSnapshot("unavailable", detail=detail)
 
+    def default_gateways(self, timeout_seconds: float) -> GatewaySnapshot:
+        """Read one fixed routing-table command; no packets are sent.
+
+        This is deliberately separate from neighbor-cache collection.  A MAC or
+        ARP entry cannot establish that a device routes traffic, whereas an OS
+        default-route entry can establish that limited, local fact.
+        """
+        timeout = clamp_timeout(timeout_seconds)
+        if self.system_name == "linux":
+            argv = ["ip", "-4", "route", "show", "default"]
+            parser = parse_linux_default_route_output
+        elif self.system_name == "windows":
+            argv = ["route", "print", "-4"]
+            parser = parse_windows_default_route_output
+        elif self.system_name == "darwin":
+            argv = ["route", "-n", "get", "default"]
+            parser = parse_macos_default_route_output
+        else:
+            return GatewaySnapshot(
+                "unavailable",
+                detail="This operating system has no supported routing-table adapter.",
+            )
+
+        try:
+            completed = self._run(argv, timeout)
+        except FileNotFoundError:
+            return GatewaySnapshot(
+                "unavailable", detail="The system routing-table command is unavailable."
+            )
+        except subprocess.TimeoutExpired:
+            return GatewaySnapshot(
+                "timeout", detail="Routing-table inspection reached its timeout."
+            )
+        except (OSError, subprocess.SubprocessError):
+            return GatewaySnapshot(
+                "error", detail="Routing-table inspection could not be completed."
+            )
+        if completed.returncode != 0:
+            return GatewaySnapshot(
+                "unavailable",
+                detail="The system routing-table command did not complete successfully.",
+            )
+        try:
+            records = tuple(parser(completed.stdout or ""))
+        except (TypeError, ValueError):
+            return GatewaySnapshot(
+                "error", detail="Routing-table output could not be interpreted safely."
+            )
+        return GatewaySnapshot("available", records=records)
+
 
 def _addresses_to_probe(
     network: ipaddress.IPv4Network,
@@ -602,6 +779,19 @@ def _evidence_for_neighbor(record: NeighborRecord) -> dict[str, object]:
     return evidence
 
 
+def _evidence_for_gateway(record: GatewayRecord) -> dict[str, object]:
+    """Represent routing evidence without implying reachability or identity."""
+    evidence: dict[str, object] = {
+        "kind": "default_gateway_route",
+        "source": "routing_table",
+    }
+    if record.interface is not None:
+        evidence["interface"] = record.interface
+    if record.metric is not None:
+        evidence["metric"] = record.metric
+    return evidence
+
+
 def discover_network(
     target: str | ipaddress.IPv4Network,
     *,
@@ -611,7 +801,7 @@ def discover_network(
     local_addresses: Iterable[ipaddress.IPv4Address | str] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, object]:
-    """Discover authorized hosts and return a deterministic schema-v1 report.
+    """Discover authorized hosts and return a deterministic schema-v2 report.
 
     Only positive evidence becomes a host record.  Silent and timed-out probes
     are counted as addresses without an observed reply; they are never described
@@ -663,16 +853,48 @@ def discover_network(
             "error", detail="The neighbor-cache adapter failed."
         )
 
+    gateway_method = getattr(system_adapter, "default_gateways", None)
+    if not callable(gateway_method):
+        # Adapters predating schema v2 remain usable.  Missing routing evidence
+        # means no role is inferred; it is never replaced by a heuristic.
+        gateway_snapshot = GatewaySnapshot(
+            "unavailable",
+            detail="The discovery adapter does not supply routing-table evidence.",
+        )
+    else:
+        try:
+            gateway_snapshot = gateway_method(timeout)
+        except Exception:
+            gateway_snapshot = GatewaySnapshot(
+                "error", detail="The routing-table adapter failed."
+            )
+        if not isinstance(gateway_snapshot, GatewaySnapshot):
+            gateway_snapshot = GatewaySnapshot(
+                "error", detail="The routing-table adapter returned invalid evidence."
+            )
+
     neighbors_by_address: dict[ipaddress.IPv4Address, list[NeighborRecord]] = {}
     for record in neighbor_snapshot.records:
         if record.address not in probe_address_set or not _is_allowed_address(record.address):
             continue
         neighbors_by_address.setdefault(record.address, []).append(record)
 
+    # Records are trusted only when the adapter says route collection completed.
+    # A contradictory custom adapter cannot attach a role to an error snapshot.
+    trusted_gateway_records = (
+        gateway_snapshot.records if gateway_snapshot.status == "available" else ()
+    )
+    gateways_by_address: dict[ipaddress.IPv4Address, list[GatewayRecord]] = {}
+    for record in trusted_gateway_records:
+        if record.address not in probe_address_set or not _is_allowed_address(record.address):
+            continue
+        gateways_by_address.setdefault(record.address, []).append(record)
+
     hosts: list[dict[str, object]] = []
     for address in probe_addresses:
         outcome = outcomes.get(address)
         neighbor_records = _deduplicate_neighbors(neighbors_by_address.get(address, []))
+        gateway_records = _deduplicate_gateways(gateways_by_address.get(address, []))
         evidence: list[dict[str, object]] = []
         if address in target_local:
             status = "local_machine"
@@ -692,14 +914,23 @@ def discover_network(
             )
         elif neighbor_records:
             status = "known_neighbor"
+        elif gateway_records:
+            # A default route is positive local routing-table evidence.  It
+            # establishes a configured next hop, not a response to a probe.
+            status = "confirmed_gateway"
         else:
             continue
         evidence.extend(_evidence_for_neighbor(record) for record in neighbor_records)
+        evidence.extend(_evidence_for_gateway(record) for record in gateway_records)
         hosts.append(
             {
                 "address": str(address),
                 "status": status,
                 "evidence": evidence,
+                # This field is intentionally absent unless the operating
+                # system's routing table itself names the address as a default
+                # next hop.  ICMP/neighbor evidence never assigns a device role.
+                **({"device_role": "gateway_router"} if gateway_records else {}),
                 "metadata": {
                     "hostname": {
                         "value": None,
@@ -716,7 +947,12 @@ def discover_network(
     }
     status_counts = {
         status: sum(host["status"] == status for host in hosts)
-        for status in ("local_machine", "confirmed_responsive", "known_neighbor")
+        for status in (
+            "local_machine",
+            "confirmed_responsive",
+            "known_neighbor",
+            "confirmed_gateway",
+        )
     }
     operational_probe = any(
         result.status in {"responsive", "no_response", "timeout"}
@@ -781,9 +1017,33 @@ def discover_network(
             "probe_unavailable": outcome_counts["unavailable"],
             "probe_errors": outcome_counts["error"],
         },
+        # Every remote probe has a validated numeric address.  Preserve its
+        # bounded outcome so interpretation can name incomplete evidence rather
+        # than reducing it to a potentially misleading aggregate count.
+        "probe_outcomes": [
+            {
+                "address": str(address),
+                "status": outcome.status,
+                **({"detail": outcome.detail} if outcome.detail else {}),
+            }
+            for address, outcome in sorted(outcomes.items(), key=lambda item: int(item[0]))
+        ],
         "neighbor_cache": {
             "status": neighbor_snapshot.status,
             "detail": neighbor_snapshot.detail,
+        },
+        "default_gateway": {
+            "status": gateway_snapshot.status,
+            "detail": gateway_snapshot.detail,
+            "records": [
+                {
+                    "address": str(record.address),
+                    **({"interface": record.interface} if record.interface else {}),
+                    **({"metric": record.metric} if record.metric is not None else {}),
+                }
+                for record in _deduplicate_gateways(trusted_gateway_records)
+                if record.address in probe_address_set
+            ],
         },
         "sources": {
             "reachability": {"status": reachability_status},
@@ -791,10 +1051,15 @@ def discover_network(
                 "status": neighbor_snapshot.status,
                 "detail": neighbor_snapshot.detail,
             },
+            "routing_table": {
+                "status": gateway_snapshot.status,
+                "detail": gateway_snapshot.detail,
+            },
         },
         "hosts": hosts,
         "limitations": [
-            "Only ICMP echo replies, local interface data, and existing neighbor-cache records are considered.",
+            "Only ICMP echo replies, local interface data, existing neighbor-cache records, and local default-route records are considered.",
+            "A device is labeled gateway/router only when a local default-route entry confirms it; neighbor/cache and reachability evidence are insufficient.",
             "A silent or timed-out address may still have a host; no absence claim is made.",
             "Hostnames are not resolved, and ports and vulnerabilities are not scanned.",
         ],
@@ -807,6 +1072,8 @@ __all__ = [
     "DEFAULT_WORKERS",
     "DiscoveryAdapter",
     "DiscoveryOperationalError",
+    "GatewayRecord",
+    "GatewaySnapshot",
     "MAX_TARGET_ADDRESSES",
     "MAX_TIMEOUT_SECONDS",
     "MAX_WORKERS",
@@ -827,7 +1094,10 @@ __all__ = [
     "detect_local_network_candidates",
     "discover_network",
     "parse_arp_output",
+    "parse_linux_default_route_output",
+    "parse_macos_default_route_output",
     "parse_ip_neighbor_output",
+    "parse_windows_default_route_output",
     "resolve_target",
     "validate_target",
 ]
