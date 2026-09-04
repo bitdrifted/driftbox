@@ -13,7 +13,8 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 `v0.1.0 — early development`
 
 System inspection, interpreted authorized private-network discovery, authorized
-single-device service inventory, safe next-move guidance, listening-port
+single-device service inventory, evidence-driven vulnerability correlation,
+safe next-move guidance, listening-port
 inspection, portable JSON reports, persistent report history, report drift detection,
 file-integrity verification, unified findings, security posture checks, persistent
 configuration, configured scanning, safe scan scheduling, an experimental
@@ -36,6 +37,10 @@ direction.
 | `driftbox discover [CIDR] --json` | Produce a schema-versioned discovery result for later inventory |
 | `driftbox services TARGET --confirm-authorization` | Inventory common TCP services on one authorized private IPv4 device |
 | `driftbox services TARGET --confirm-authorization --json` | Produce schema-versioned service evidence without terminal truncation |
+| `driftbox vulnerabilities SERVICE_REPORT.json` | Correlate sufficiently specific service evidence with NVD and CISA KEV |
+| `driftbox vulnerabilities SERVICE_REPORT.json --json` | Produce complete, schema-versioned vulnerability-candidate evidence |
+| `driftbox vulnerabilities SERVICE_REPORT.json --offline` | Use only locally cached authoritative-source evidence |
+| `driftbox vulnerabilities SERVICE_REPORT.json --refresh` | Bypass fresh-cache reuse and retrieve current source data |
 | `driftbox ports` | Classify listening TCP and bound UDP ports by network scope |
 | `driftbox firewall` | Inspect local firewall status without changing its configuration |
 | `driftbox report` | Generate a machine-readable JSON report |
@@ -399,7 +404,7 @@ LIMITATIONS
 -----------
 - Only the selected common TCP ports were examined.
 - Firewalls, filtering, and network conditions can affect observations.
-- Vulnerability correlation and exploit guidance are not implemented.
+- Vulnerability correlation is not performed by this service-inventory command.
 ```
 
 An open port is evidence that a service accepted a connection during this scan,
@@ -436,9 +441,183 @@ Service inventory has stable exit codes:
 
 JSON errors include a stable status and `scan_started` boolean. Partial evidence
 is successful but explicitly marked; an open port is never an error or automatic
-vulnerability finding. Vulnerability correlation with authoritative source
-provenance is the next unimplemented milestone. This milestone generates no
-exploit commands.
+vulnerability finding. The service-inventory command itself does not perform
+vulnerability correlation. Its saved JSON can be reviewed and passed explicitly
+to the separate vulnerability-intelligence command below. Service inventory
+generates no exploit commands.
+
+## evidence-driven vulnerability intelligence
+
+Analyze a previously created service-inventory report without scanning the
+device again:
+
+```bash
+driftbox vulnerabilities service-report.json
+driftbox vulnerabilities service-report.json --json
+driftbox vulnerabilities service-report.json --offline
+driftbox vulnerabilities service-report.json --refresh
+```
+
+In PowerShell, create the input from a separately authorized, privacy-safe
+single-device inventory. Review the target and authorization before running the
+active inventory:
+
+```powershell
+driftbox services 192.168.50.20 --confirm-authorization --json > service-report.json
+driftbox vulnerabilities service-report.json
+```
+
+Windows PowerShell may write redirected native output as BOM-marked UTF-16.
+Vulnerability analysis deterministically accepts UTF-8, UTF-8 with a byte-order
+marker, UTF-16 little-endian with a marker, and UTF-16 big-endian with a marker.
+An unmarked file must be strict UTF-8. The input file and every collection,
+string, CPE, service, query, source response, and candidate list are bounded.
+The complete service transport schema and supported version are validated before
+any network request. Malformed, oversized, unsupported, ambiguous, or unsafe
+input returns a stable error without contacting a source.
+
+This command is correlation, not scanning. It never launches Nmap, probes the
+saved target, expands a target, resolves names, executes a recommendation,
+patches software, or invokes a shell. The private target address, Nmap command,
+raw report, process details, and unrelated evidence are never sent to a public
+source. Only an eligible canonical CPE 2.3 name is sent to NVD. CISA receives no
+device evidence.
+
+### evidence eligibility
+
+A service is eligible only when all of these deterministic conditions hold:
+
+- Nmap recorded the service with detection method `probed` and its maximum
+  confidence value, `10`.
+- Nmap supplied an application (`a`) or operating-system (`o`) CPE 2.2 URI that
+  Driftbox can convert unambiguously to canonical CPE 2.3.
+- The CPE contains exact, non-wildcard vendor, product, and version components.
+- The CPE contains no unsupported edition/language ambiguity, unsafe escape,
+  control character, or unsupported part.
+
+Product names alone never trigger a keyword search. Missing CPEs, wildcard or
+missing versions, table-based labels, low confidence, and unsupported CPE forms
+remain in the result with an explanation and cause no lookup for that service.
+Identical canonical CPEs are queried once. The per-invocation unique-query limit
+is deliberately small; evidence beyond it is marked partial rather than silently
+dropped.
+
+For example, high-confidence probed evidence containing
+`cpe:/a:apache:http_server:2.4.49` is specific enough to query NVD as
+`cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*`. Any returned CVE is still a
+candidate requiring local confirmation. By contrast, observed tcp/135 `msrpc`,
+tcp/139 `netbios-ssn`, and tcp/445 `microsoft-ds` labels, or the incomplete CPE
+`cpe:/o:microsoft:windows`, support only this bottom line:
+
+- common Windows-related services were observed;
+- no exact affected product version was established;
+- reliable CVE correlation was therefore not performed;
+- no vulnerability or safety conclusion can be drawn; and
+- the next step is better version or asset-owner evidence, not guessing.
+
+Ordinary insufficient evidence is a successful, explicit result, not an
+operational failure.
+
+### authoritative sources, rate limits, and cache
+
+Driftbox contacts only these fixed official HTTPS resources:
+
+- [NVD CVE API 2.0](https://services.nvd.nist.gov/rest/json/cves/2.0), using the
+  `cpeName` parameter for each eligible canonical CPE;
+- [NVD human-readable CVE detail](https://nvd.nist.gov/vuln/detail/CVE-ID), with
+  the validated CVE ID substituted into the fixed detail path;
+- [CISA KEV JSON](https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json);
+  and
+- [CISA Known Exploited Vulnerabilities catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog).
+
+Requests use certificate-verified HTTPS, fixed hosts and paths, safe URL
+encoding, bounded responses, finite retries, conservative timeouts, and strict
+redirect validation. Redirects outside the expected official HTTPS host/path are
+refused. HTTP 403, 404, 429, 5xx, `Retry-After`, TLS failures, timeouts,
+pagination, malformed JSON, and oversized/decompression responses are handled
+without indefinite retries. Driftbox spaces unauthenticated NVD requests by at
+least six seconds and permits no more than five in a rolling 30-second window.
+With an NVD API key it still spaces requests conservatively and permits no more
+than 50 in the rolling window.
+
+An optional NVD key is read only from `DRIFTBOX_NVD_API_KEY`. It is sent only in
+the `apiKey` request header. There is intentionally no API-key command-line
+argument. For one PowerShell session:
+
+```powershell
+$env:DRIFTBOX_NVD_API_KEY = "your-key-from-NVD"
+driftbox vulnerabilities service-report.json --refresh
+Remove-Item Env:DRIFTBOX_NVD_API_KEY
+```
+
+The key is never placed in a URL, cache key/value, report, fixture, exception,
+log, or terminal output. Avoid saving credentials in shell history or project
+files.
+
+Successful source data is cached for 24 hours in a schema-versioned per-user
+vulnerability cache with atomic writes:
+
+- Windows: `%LOCALAPPDATA%\Driftbox\vulnerability-cache`
+- macOS: `~/Library/Application Support/Driftbox/vulnerability-cache`
+- Linux and WSL: `${XDG_STATE_HOME:-~/.local/state}/driftbox/vulnerability-cache`
+- override: `DRIFTBOX_STATE_DIR/vulnerability-cache`
+
+Cache keys depend only on source identity and normalized CPE, never the target
+or API key. Records identify the source, retrieval time, available upstream
+version/timestamp, and retrieval state. Incompatible or malformed entries are
+not trusted. Normal mode reuses fresh entries; `--refresh` bypasses fresh reuse
+and requests current data. `--offline` makes zero network requests and uses only
+valid cached evidence. Valid stale fallback is labeled `stale`, source failures
+and partial availability remain visible, and `--offline --refresh` is refused as
+conflicting.
+
+### candidate meaning and output
+
+Vulnerability JSON uses its own schema version. It preserves the validated local
+service evidence, canonical CPE and eligibility reason, deterministic lookup
+plan, candidate status, NVD status and English description, timestamps, best
+supported CVSS version/score/vector/severity, CWE IDs, KEV fields when present,
+retrieval/cache state, exact authoritative provenance, uncertainty,
+limitations, and structured next steps. Candidates are ordered with KEV-listed
+items first, then by severity/score and CVE ID. Human output independently bounds
+its preview; `--json` retains the complete bounded evidence.
+
+An NVD result means NVD associated a CVE candidate with the exact CPE sent. It
+does not prove the saved device is affected, vulnerable, exploitable,
+compromised, internet reachable, or unpatched. A zero-candidate response does
+not prove the product is patched or safe.
+
+A CISA KEV match means CISA has evidence that the vulnerability has been
+exploited in the wild. It is urgent prioritization evidence, but it does not
+prove that this specific device is affected or compromised. Absence from a
+successfully retrieved KEV catalog means only that the candidate was not listed
+in that catalog at retrieval time; it does not prove the vulnerability has never
+been exploited or that the device is safe. An unavailable KEV source is reported
+as unknown, not absent.
+
+Recommendations are structured suggestions and never execute. They are limited
+to confirming the installed product/version with the asset owner, reviewing the
+authoritative NVD detail, prioritizing validated vendor remediation (especially
+for KEV matches), applying vendor-supported updates or mitigations through an
+approved change process, repeating an already-authorized inventory after
+remediation, and preserving JSON evidence for comparison. Driftbox provides no
+exploit code, public-exploit or proof-of-concept links, Metasploit guidance, NSE
+vulnerability scripts, credentials/brute force, persistence, evasion,
+destructive validation, automatic scanning, or automatic patching.
+
+Vulnerability intelligence has stable exit codes:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Analysis completed with no candidate CVEs, or insufficient service evidence was reported successfully |
+| `1` | One or more candidate CVEs require human review |
+| `2` | Input/schema/options were invalid, conflicting, unsupported, or unsafe; no source request was made for invalid input |
+| `4` | No usable authoritative or cached evidence remained after a source, timeout, cache, parsing, or output failure |
+
+Usable partial evidence is preserved and clearly labeled rather than converted
+to an operational failure. All automated tests use injected HTTP clients,
+clocks, sleepers, temporary state directories, and synthetic reports; they make
+no live NVD/CISA requests and invoke no Nmap or discovery command.
 
 ## port exposure
 
@@ -817,8 +996,8 @@ Driftbox automatically detects the operating environment and exposes information
 
 ## coming next
 
-- Evidence-correlated vulnerability analysis built on reviewed service
-  inventory, without treating service labels as proof
+- Operator-confirmed remediation tracking and before/after evidence comparison,
+  without automatic patching or unapproved rescanning
 - Optional report redaction
 
 ## repository boundary

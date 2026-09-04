@@ -87,6 +87,22 @@ from driftbox.service_inventory_interpretation import (
     validate_service_recommendation_commands,
     with_service_inventory_interpretation,
 )
+from driftbox.vulnerability_analysis import (
+    VULNERABILITY_ANALYSIS_SCHEMA_VERSION,
+    ServiceReportValidationError,
+    VulnerabilityAnalysisError,
+    build_lookup_plan,
+    build_vulnerability_analysis_report,
+    format_vulnerability_analysis,
+    load_service_inventory_report,
+)
+from driftbox.vulnerability_sources import (
+    CISA_KEV_CATALOG_URL,
+    CISA_KEV_URL,
+    NVD_API_URL,
+    NVD_DETAIL_URL,
+    SourceCoordinator,
+)
 from driftbox.report_diff import (
     compare_snapshots,
     format_drift,
@@ -1290,7 +1306,7 @@ def _service_inventory_report(
             "Open services are not automatically vulnerable or malicious.",
             "Firewalls, filtering, and network conditions can affect observations.",
             "This scan does not establish internet reachability.",
-            "Vulnerability correlation and exploit guidance are not implemented.",
+            "Vulnerability correlation is not performed by this service-inventory command.",
         ],
     }
 
@@ -1577,6 +1593,164 @@ def run_service_inventory(
     return 0
 
 
+def _show_vulnerability_error(
+    status: str,
+    message: str,
+    *,
+    json_output: bool,
+    source_status: object | None = None,
+) -> None:
+    """Present stable vulnerability-analysis errors without source secrets."""
+    if json_output:
+        payload: dict[str, object] = {
+            "schema_version": VULNERABILITY_ANALYSIS_SCHEMA_VERSION,
+            "status": status,
+            "message": message,
+        }
+        if isinstance(source_status, dict):
+            payload["source_status"] = source_status
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(f"driftbox: vulnerabilities: {message}", file=sys.stderr)
+
+
+def run_vulnerability_intelligence(
+    report_path: str,
+    *,
+    json_output: bool = False,
+    offline: bool = False,
+    refresh: bool = False,
+    coordinator: object | None = None,
+) -> int:
+    """Correlate one validated saved service report with official sources.
+
+    Loading, complete transport validation, and eligibility planning all finish
+    before a source coordinator is constructed.  An ineligible report therefore
+    cannot produce an HTTP or cache request.
+    """
+    if offline and refresh:
+        _show_vulnerability_error(
+            "conflicting_options",
+            "--offline and --refresh cannot be used together.",
+            json_output=json_output,
+        )
+        return 2
+
+    try:
+        service_report = load_service_inventory_report(report_path)
+        lookup_plan = build_lookup_plan(service_report)
+    except (ServiceReportValidationError, VulnerabilityAnalysisError) as error:
+        _show_vulnerability_error(
+            "invalid_input",
+            str(error),
+            json_output=json_output,
+        )
+        return 2
+    except Exception:
+        _show_vulnerability_error(
+            "invalid_input",
+            "Service report validation could not complete safely.",
+            json_output=json_output,
+        )
+        return 2
+
+    provenance = {
+        "nvd": {
+            "api": NVD_API_URL,
+            "detail_template": f"{NVD_DETAIL_URL}CVE-ID",
+        },
+        "cisa_kev": {
+            "json": CISA_KEV_URL,
+            "catalog": CISA_KEV_CATALOG_URL,
+        },
+    }
+    source_status: dict[str, object] = {
+        "nvd": {"state": "not-requested", "by_cpe": {}},
+        "cisa-kev": {"state": "not-requested"},
+    }
+    nvd_by_cpe: dict[str, object] = {}
+    kev: dict[str, object] = {}
+    queries = lookup_plan.get("queries")
+    if not isinstance(queries, list):
+        _show_vulnerability_error(
+            "invalid_input",
+            "Service evidence eligibility could not be represented safely.",
+            json_output=json_output,
+        )
+        return 2
+
+    if queries:
+        cpes = [
+            query.get("canonical_cpe")
+            for query in queries
+            if isinstance(query, dict)
+        ]
+        try:
+            active_coordinator = coordinator or SourceCoordinator()
+            fetch = getattr(active_coordinator, "fetch", None)
+            if not callable(fetch):
+                raise ValueError("source coordinator is unavailable")
+            source_result = fetch(cpes, offline=offline, refresh=refresh)
+            if not isinstance(source_result, dict):
+                raise ValueError("source result is malformed")
+            raw_status = source_result.get("sources")
+            raw_nvd = source_result.get("nvd_by_cpe")
+            raw_kev = source_result.get("kev")
+            if (
+                not isinstance(raw_status, dict)
+                or not isinstance(raw_nvd, dict)
+                or not isinstance(raw_kev, dict)
+            ):
+                raise ValueError("source result is malformed")
+            source_status = raw_status
+            nvd_by_cpe = raw_nvd
+            kev = raw_kev
+            if source_result.get("usable") is not True:
+                _show_vulnerability_error(
+                    "sources_unavailable",
+                    "No usable authoritative or cached vulnerability evidence is available.",
+                    json_output=json_output,
+                    source_status=source_status,
+                )
+                return 4
+        except Exception:
+            _show_vulnerability_error(
+                "sources_unavailable",
+                "Authoritative vulnerability sources could not operate safely.",
+                json_output=json_output,
+                source_status=source_status,
+            )
+            return 4
+
+    try:
+        analysis = build_vulnerability_analysis_report(
+            service_report,
+            nvd_by_cpe,
+            kev,
+            source_status=source_status,
+            provenance=provenance,
+        )
+        rendered = (
+            json.dumps(analysis, indent=2, sort_keys=True)
+            if json_output
+            else format_vulnerability_analysis(analysis)
+        )
+        print(rendered)
+    except Exception:
+        try:
+            _show_vulnerability_error(
+                "output_failure",
+                "Vulnerability analysis output could not be produced safely.",
+                json_output=json_output,
+                source_status=source_status,
+            )
+        except Exception:
+            pass
+        return 4
+    candidates = analysis.get("candidates")
+    return 1 if isinstance(candidates, list) and candidates else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the Driftbox argument parser."""
     parser = argparse.ArgumentParser(
@@ -1664,6 +1838,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TOP_PORTS,
         metavar="NUMBER",
         help="Common TCP port scope, 1-1000 (default: 100)",
+    )
+    vulnerabilities_parser = commands.add_parser(
+        "vulnerabilities",
+        help="Correlate saved exact service evidence with NVD and CISA KEV",
+        description=(
+            "Validate a saved Driftbox service-inventory JSON report and "
+            "cautiously correlate only exact, high-confidence CPE evidence. "
+            "This command does not scan the target or execute recommendations."
+        ),
+    )
+    vulnerabilities_parser.add_argument(
+        "service_report",
+        metavar="SERVICE_REPORT.json",
+        help="Previously created Driftbox service-inventory JSON report",
+    )
+    vulnerabilities_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Write complete bounded schema-versioned correlation evidence",
+    )
+    vulnerability_source_mode = vulnerabilities_parser.add_mutually_exclusive_group()
+    vulnerability_source_mode.add_argument(
+        "--offline",
+        action="store_true",
+        help="Make zero network requests and use only valid cache entries",
+    )
+    vulnerability_source_mode.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Bypass fresh-cache reuse and request current official source data",
     )
     commands.add_parser("ports", help="Display listening TCP and bound UDP ports")
     commands.add_parser("report", help="Generate a portable JSON system report")
@@ -1810,6 +2015,13 @@ def main() -> int:
             authorization_confirmed=args.authorization_confirmed,
             json_output=args.json_output,
             top_ports=args.top_ports,
+        )
+    elif args.command == "vulnerabilities":
+        return run_vulnerability_intelligence(
+            args.service_report,
+            json_output=args.json_output,
+            offline=args.offline,
+            refresh=args.refresh,
         )
     elif args.command == "ports":
         show_listening_ports()

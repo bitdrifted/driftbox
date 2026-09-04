@@ -358,10 +358,11 @@ def build_service_inventory_interpretation(report: Mapping[str, object]) -> dict
             "tcp_ports_examined": top_ports,
             "evidence_incomplete": incomplete,
             "vulnerability_correlation": {
-                "status": "not_implemented",
+                "status": "not_performed",
                 "statement": (
-                    "Driftbox does not infer vulnerabilities from service or "
-                    "version evidence and does not generate exploit commands."
+                    "Service inventory does not infer vulnerabilities from labels. "
+                    "A saved JSON report may be passed explicitly to `driftbox "
+                    "vulnerabilities` for conservative exact-CPE correlation."
                 ),
             },
         },
@@ -371,7 +372,7 @@ def build_service_inventory_interpretation(report: Mapping[str, object]) -> dict
         "limitations": [
             "Only the selected common TCP ports were examined.",
             "Firewalls, filtering, and network conditions can affect observations.",
-            "Vulnerability correlation and exploit guidance are not implemented.",
+            "Vulnerability correlation is not performed by this service-inventory command.",
         ],
         "recommendations": _recommendations(target, len(services), top_ports),
         "detailed_evidence": {
