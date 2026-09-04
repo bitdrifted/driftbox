@@ -581,7 +581,10 @@ retrieval/cache state, exact authoritative provenance, uncertainty,
 limitations, and structured next steps. A CVE associated with multiple eligible
 CPE queries appears once, with every distinct CPE/service correlation retained
 in deterministic supporting evidence. Candidate limits count unique CVEs, not
-correlation occurrences. Conflicting NVD metadata variants for one CVE are
+correlation occurrences. `candidate_summary` reports globally deduplicated
+observed, included, and omitted unique-CVE counts across eligible queries;
+repeated omitted CVEs count once, and their identifiers are not retained or
+exposed. Conflicting NVD metadata variants for one CVE are
 preserved, make the candidate and report partial, and require authoritative
 review; the highest reported severity and score are used only for deterministic
 display and ordering. Candidates are ordered with KEV-listed items first, then

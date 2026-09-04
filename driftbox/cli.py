@@ -1670,6 +1670,7 @@ def run_vulnerability_intelligence(
     }
     nvd_by_cpe: dict[str, object] = {}
     kev: dict[str, object] = {}
+    source_candidate_summary: dict[str, object] | None = None
     queries = lookup_plan.get("queries")
     if not isinstance(queries, list):
         _show_vulnerability_error(
@@ -1696,15 +1697,18 @@ def run_vulnerability_intelligence(
             raw_status = source_result.get("sources")
             raw_nvd = source_result.get("nvd_by_cpe")
             raw_kev = source_result.get("kev")
+            raw_candidate_summary = source_result.get("candidate_summary")
             if (
                 not isinstance(raw_status, dict)
                 or not isinstance(raw_nvd, dict)
                 or not isinstance(raw_kev, dict)
+                or not isinstance(raw_candidate_summary, dict)
             ):
                 raise ValueError("source result is malformed")
             source_status = raw_status
             nvd_by_cpe = raw_nvd
             kev = raw_kev
+            source_candidate_summary = raw_candidate_summary
             if source_result.get("usable") is not True:
                 _show_vulnerability_error(
                     "sources_unavailable",
@@ -1729,6 +1733,7 @@ def run_vulnerability_intelligence(
             kev,
             source_status=source_status,
             provenance=provenance,
+            source_candidate_summary=source_candidate_summary,
         )
         rendered = (
             json.dumps(analysis, indent=2, sort_keys=True)
