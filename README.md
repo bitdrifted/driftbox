@@ -12,8 +12,8 @@ Built for Linux, Windows, macOS, and Windows Subsystem for Linux (WSL).
 
 `v0.1.0 — early development`
 
-System inspection, authorized private-network discovery, listening-port inspection,
-portable JSON reports, persistent report history, report drift detection,
+System inspection, interpreted authorized private-network discovery, safe next-move
+guidance, listening-port inspection, portable JSON reports, persistent report history, report drift detection,
 file-integrity verification, unified findings, security posture checks, persistent
 configuration, configured scanning, safe scan scheduling, an experimental
 synthetic training mission, automated tests, and cross-platform validation are
@@ -91,44 +91,113 @@ driftbox discover 192.168.50.0/29 --timeout 0.5 --workers 8
 driftbox discover 192.168.50.0/29 --json > discovery.json
 ```
 
-An illustrative human-readable result is:
+User testing showed that raw discovery rows were technically useful but did not
+give beginners enough plain-English interpretation or contextual command
+options. Discovery now explains what the evidence does and does not prove, then
+offers ranked next moves without running them. An illustrative human-readable
+result is:
 
 ```text
 driftbox :: authorized private-network discovery
+
+DISCOVERY SUMMARY
+-----------------
+Network inspected: 192.168.1.0/29 (8 addresses; 6 host addresses; 5 remote probes)
 Authorization: scan only networks you own or have explicit permission to inspect.
-Method: bounded, unprivileged ICMP echo plus local neighbor/cache evidence.
-Target: 192.168.50.0/29 (8 addresses; 6 host addresses; 5 remote probes)
-Parameters: timeout 0.75 seconds; workers 16
-Collection status: completed
+Method: bounded, unprivileged ICMP echo plus read-only local neighbor/cache and routing-table evidence.
+Parameters: timeout 0.5 seconds; workers 4
+Collection status: partial
+Positive host evidence: 4 addresses; 1 reply.
+This computer's address: 192.168.1.1
+Devices that responded during the scan: 192.168.1.2
+Devices supported only by neighbor/cache evidence: 192.168.1.3
+Addresses that did not respond: 192.168.1.3, 192.168.1.4
+Confirmed default gateway: 192.168.1.4
+Collection errors or incomplete evidence: reachability=partial (some probes failed); probe issues at 192.168.1.5, 192.168.1.6.
 
-ADDRESS         CLASSIFICATION          EVIDENCE
---------------- ----------------------- --------------------------------
-192.168.50.1    local machine           local interface address (source: local interface data)
-192.168.50.2    confirmed responsive    ICMP echo reply (source: system ping)
-192.168.50.3    locally known neighbor  neighbor/cache entry (source: ARP cache, MAC: 00:11:22:33:44:55, state: dynamic)
+WHAT THIS MEANS
+---------------
+- A response proves only that the device answered at scan time.
+- Cache evidence means this computer has seen the device, not necessarily that it is currently online.
+- Silence does not prove an address is unused or offline.
+- The discovered device count is a minimum supported by positive evidence.
+- Unknown devices are not automatically suspicious or malicious.
 
-Evidence summary: 3 host(s) recorded (1 local machine, 1 confirmed responsive, 1 locally known neighbor).
-Probe summary: 5 attempted; 1 reply; 4 without an observed reply; 0 timed out; 0 unavailable; 0 errors.
+RECOMMENDED NEXT STEPS
+----------------------
+1. driftbox ports
+   Purpose: Inspect listening TCP and locally bound UDP ports on this machine.
+   Reason: This adds local exposure context without contacting discovered hosts.
+   Target: this local machine
+   Risk/activity: LOCAL READ-ONLY
+   Authorization: Permission to inspect this local machine; no additional network authorization is required.
+   Expected result: A local list of accessible listening ports and their bind scope.
+   Available now: yes. Runs locally and does not probe discovered addresses.
+2. driftbox firewall
+   Purpose: Inspect local firewall status and available profile details.
+   Reason: Firewall policy is separate local evidence that discovery cannot establish.
+   Target: this local machine
+   Risk/activity: LOCAL READ-ONLY
+   Authorization: Permission to inspect this local machine; no additional network authorization is required.
+   Expected result: Read-only firewall status; unavailable or unknown is reported rather than guessed.
+   Available now: yes. Runs locally and does not change firewall configuration.
+3. driftbox report
+   Purpose: Create a machine-readable local system report.
+   Reason: A local report provides a separate baseline without expanding discovery.
+   Target: this local machine
+   Risk/activity: LOCAL READ-ONLY
+   Authorization: Permission to inspect this local machine; no additional network authorization is required.
+   Expected result: JSON containing local system, network, firewall, and listener observations.
+   Available now: yes. Review the report before sharing it.
+4. driftbox discover 192.168.1.0/29 --json
+   Purpose: Repeat the same bounded collection and retain structured results.
+   Reason: A later authorized collection can be reviewed for changes in the same scope.
+   Target: 192.168.1.0/29
+   Risk/activity: ACTIVE AUTHORIZED SCAN
+   Authorization: Explicit authorization to inspect 192.168.1.0/29.
+   Expected result: Schema-versioned JSON with evidence, interpretation, and limitations.
+   Available now: yes. Run only after reconfirming authorization for this exact CIDR.
+
+DETAILED EVIDENCE
+-----------------
+ADDRESS         CLASSIFICATION              EVIDENCE
+--------------- --------------------------- --------------------------------
+192.168.1.1     local machine               local interface address (source: local interface data)
+192.168.1.2     confirmed responsive        ICMP echo reply (source: system ping)
+192.168.1.3     locally known neighbor      neighbor/cache entry (source: ARP cache)
+192.168.1.4     configured gateway/router   configured default-gateway route (source: local routing table, interface: eth0)
+
+Probe summary: 5 attempted; 1 reply; 1 without an observed reply; 1 timed out; 1 unavailable; 1 error.
 Neighbor/cache evidence: available.
 Hostnames: not collected (unavailable metadata; reverse DNS is disabled).
 Silence is inconclusive and never means that a host does not exist.
-Limitations:
-- Only ICMP echo replies, local interface data, and existing neighbor-cache records are considered.
-- A silent or timed-out address may still have a host; no absence claim is made.
-- Hostnames are not resolved, and ports and vulnerabilities are not scanned.
-Privacy: review this private network inventory before storing or sharing it.
-Next safe step: verify ownership and record expected devices and changes; discovery does not authorize port scanning.
 ```
 
 Discovery uses short, unprivileged ICMP echo commands and reads the operating
-system's local neighbor cache. It does not require administrator privileges or
-raw sockets. Results distinguish the local machine, a confirmed responsive host
-with direct probe evidence, and a locally known neighbor/cache entry. A cache
-entry is historical local evidence, not proof that a device is currently online.
-A silent target may block ICMP, be asleep, or be absent; Driftbox never claims
-that silence proves a host does not exist. Reverse DNS is intentionally skipped,
-so hostnames remain optional, unavailable metadata rather than introducing
-unpredictable delays or disclosing addresses to a DNS service.
+system's local neighbor cache and routing table. Routing-table collection is
+read-only and uses fixed commands behind the same testable adapter: `ip -4 route
+show default` on Linux, `route print -4` on Windows, and `route -n get default`
+on macOS. A host is labeled `gateway_router` only when a parsed default-route
+record names its address inside the inspected CIDR. Ping responses, neighbor
+records, address position, and common `.1` conventions never assign that role.
+
+Discovery does not require administrator privileges or raw sockets. Results
+distinguish the local machine, a confirmed responsive host, a cache-only host,
+and a configured default-route next hop. A cache entry is historical local
+evidence, not proof that a device is currently online. A silent target may block
+ICMP, be asleep, or be absent; Driftbox never claims that silence proves a host
+does not exist. Reverse DNS remains disabled, so hostnames cannot expand the
+reviewed numeric scope or trigger external DNS traffic.
+
+The Next Move Engine is deterministic and offline. It recommends only commands
+implemented by the current CLI, validates every recommendation with the real
+argument parser, and never inserts a hostname or unvalidated text into a command.
+Each structured recommendation records its rank, exact command, purpose, reason,
+exact target, risk/activity label, authorization requirement, expected result,
+and current availability. The activity vocabulary is `PASSIVE`, `LOCAL
+READ-ONLY`, `ACTIVE AUTHORIZED SCAN`, and `LAB-ONLY`; current recommendations use
+only the applicable local-read-only and authorized-scan labels. Recommendations
+are guidance, not authorization, and Driftbox never executes them automatically.
 
 The conservative defaults are 16 workers and 0.75 seconds per probe. Driftbox
 constrains `--workers` to 1 through 32 and `--timeout` to 0.1 through 2.0
@@ -136,17 +205,24 @@ seconds; values beyond those limits are safely clamped. Driftbox refuses targets
 larger than 256 total addresses. Work is bounded and output is sorted by numeric
 address, but operating-system scheduling means overall run time can still vary.
 
-`--json` writes the same result as schema-versioned JSON. The top-level fields
-are `schema_version`, `generated_at`, `collection_status`, `target`, `settings`,
-`authorization`, `summary`, `neighbor_cache`, `sources`, `hosts`, and
-`limitations`. They are intended as a stable starting point for future service
-inventory and vulnerability analysis. `collection_status` is `completed` when
-the evidence sources completed, `partial` when at least one safe source worked,
-and `unavailable` when none could operate. Each host retains its classification
-and supporting evidence; consumers should not infer liveness from missing
-entries. Discovery data contains private addresses, interface details, MAC
-addresses when the operating system exposes them, and other local network
-evidence. Protect it and review it before storing or sharing it.
+`--json` writes discovery schema version 2. Version 2 deliberately adds ordered
+`probe_outcomes`, `default_gateway`, `sources.routing_table`, route evidence and
+the optional `confirmed_gateway` host status, plus the top-level
+`interpretation` object. Existing fields retain their meanings. The nested
+interpretation schema starts at version 1 and contains `discovery_summary`,
+`what_this_means`, `recommendations`, and `detailed_evidence`. Consumers must
+check both schema versions and tolerate additive fields. Older schema-v1
+discovery data can still be interpreted, but address-level negative outcomes and
+gateway evidence are reported as not collected rather than reconstructed.
+
+`collection_status` keeps its established reachability/neighbor semantics so
+existing exit codes do not change. A routing-table failure is instead explicit
+under `default_gateway`, `sources.routing_table`, and the interpretation's
+incomplete-evidence data. Each host retains its classification and supporting
+evidence; consumers must not infer liveness from missing entries. Discovery data
+contains private addresses, interface and route details, MAC addresses when the
+operating system exposes them, and other local network evidence. Protect it and
+review it before storing or sharing it.
 
 Discovery has stable exit codes:
 
@@ -157,10 +233,11 @@ Discovery has stable exit codes:
 | `3` | Multiple suitable local networks require explicit selection; no probes ran |
 | `4` | No suitable local network was found, or discovery could not operate |
 
-This first version does not perform port scanning, service detection, CVE
-lookup, Nmap integration, exploitation, credential attacks, stealth,
-persistence, evasion, or attack-tool execution. Tests mock interface, command,
-timeout, and cache behavior; automated validation does not probe a real network.
+This milestone does not perform port scanning, service detection, CVE lookup,
+Nmap integration, exploitation, credential attacks, stealth, persistence,
+evasion, or attack-tool execution. Tests mock interface, probe, routing-table,
+neighbor-cache, command, and timeout behavior; automated validation does not
+probe or scan a real network.
 
 ## port exposure
 
@@ -537,7 +614,7 @@ prototype boundaries and future migration path.
 
 Driftbox automatically detects the operating environment and exposes information appropriate to that system.
 
-## planned capabilities
+## coming next
 
 - Authorized service inventory and vulnerability-analysis guidance built on
   reviewed discovery evidence

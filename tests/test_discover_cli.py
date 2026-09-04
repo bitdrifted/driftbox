@@ -15,6 +15,7 @@ from driftbox.cli import (
     main,
     run_network_discovery,
 )
+from driftbox.discovery_interpretation import with_discovery_interpretation
 from driftbox.network_discovery import (
     CandidateSelectionRequired,
     DiscoveryOperationalError,
@@ -171,10 +172,17 @@ class DiscoverCommandTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(output.getvalue()), sample_report())
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            with_discovery_interpretation(sample_report()),
+        )
         self.assertEqual(
             output.getvalue(),
-            json.dumps(sample_report(), indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                with_discovery_interpretation(sample_report()),
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
         )
         detect.assert_not_called()
         resolve.assert_called_once_with("192.168.1.0/30", candidates=None)
@@ -223,6 +231,7 @@ class DiscoverCommandTests(unittest.TestCase):
 
         payload = json.loads(output.getvalue())
         self.assertEqual(code, 3)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["status"], "selection_required")
         self.assertIs(payload["probes_started"], False)
         self.assertEqual([item["cidr"] for item in payload["candidates"]], [
