@@ -248,7 +248,11 @@ class DiscoveryInterpretationTests(unittest.TestCase):
             "DETAILED EVIDENCE",
         ):
             self.assertIn(heading, text)
-        self.assertIn("Addresses that did not respond: 192.168.1.3, 192.168.1.4", text)
+        self.assertIn("Addresses that did not respond: 2.", text)
+        self.assertIn(
+            "Addresses that did not respond (terminal preview): 192.168.1.3, 192.168.1.4",
+            text,
+        )
         self.assertIn("Addresses with unavailable or failed probes: 192.168.1.5, 192.168.1.6", text)
         self.assertIn("This computer's address: 192.168.1.1", text)
         self.assertIn("Devices that responded during the scan: 192.168.1.2", text)
@@ -261,6 +265,90 @@ class DiscoveryInterpretationTests(unittest.TestCase):
         self.assertIn("Risk/activity: LOCAL READ-ONLY", text)
         self.assertIn("Available now: yes.", text)
         self.assertIn("Discovery does not authorize port scanning", text)
+
+    def test_human_output_bounds_each_address_preview_and_host_table(self) -> None:
+        data = report()
+        target = data["target"]
+        summary = data["summary"]
+        assert isinstance(target, dict)
+        assert isinstance(summary, dict)
+        target.update({
+            "cidr": "192.168.1.0/24",
+            "address_count": 256,
+            "host_address_count": 254,
+            "probe_address_count": 254,
+        })
+
+        def host(address: int, status: str, evidence: list[dict[str, object]]) -> dict[str, object]:
+            return {
+                "address": f"192.168.1.{address}",
+                "status": status,
+                "evidence": evidence,
+            }
+
+        data["hosts"] = (
+            [host(address, "local_machine", [{
+                "kind": "local_interface_address", "source": "psutil_interface_data",
+            }]) for address in range(1, 12)]
+            + [host(address, "confirmed_responsive", [{
+                "kind": "icmp_echo_reply", "source": "system_ping",
+            }]) for address in range(20, 31)]
+            + [host(address, "known_neighbor", [{
+                "kind": "neighbor_cache", "source": "arp_cache",
+            }]) for address in range(40, 51)]
+            + [host(address, "confirmed_gateway", [{
+                "kind": "default_gateway_route", "source": "routing_table",
+            }]) for address in range(60, 71)]
+        )
+        data["probe_outcomes"] = (
+            [{"address": f"192.168.1.{address}", "status": "no_response"}
+             for address in range(80, 92)]
+            + [{"address": f"192.168.1.{address}", "status": "unavailable"}
+             for address in range(100, 112)]
+        )
+        summary.update({
+            "local_machine": 11,
+            "confirmed_responsive": 11,
+            "known_neighbor": 11,
+            "confirmed_gateway": 11,
+            "addresses_probed": 24,
+            "responses_received": 0,
+            "no_response_observed": 12,
+            "probe_timeouts": 0,
+            "probe_unavailable": 12,
+            "probe_errors": 0,
+        })
+
+        enriched = with_discovery_interpretation(data)
+        self.assertEqual(enriched["probe_outcomes"], data["probe_outcomes"])
+        text = format_network_discovery(enriched)
+
+        self.assertIn(
+            "This computer's address: 192.168.1.1, 192.168.1.2, 192.168.1.3, "
+            "192.168.1.4, 192.168.1.5, 192.168.1.6, 192.168.1.7, 192.168.1.8, "
+            "192.168.1.9, 192.168.1.10, and 1 more",
+            text,
+        )
+        self.assertIn("Devices that responded during the scan: 192.168.1.20", text)
+        self.assertIn("192.168.1.29, and 1 more", text)
+        self.assertIn("Devices supported only by neighbor/cache evidence: 192.168.1.40", text)
+        self.assertIn("192.168.1.49, and 1 more", text)
+        self.assertIn("Confirmed default gateway: 192.168.1.60", text)
+        self.assertIn("192.168.1.69, and 1 more", text)
+        self.assertIn("Addresses that did not respond: 12.", text)
+        self.assertIn("Addresses that did not respond (terminal preview): 192.168.1.80", text)
+        self.assertIn("192.168.1.89, and 2 more", text)
+        self.assertIn("Addresses with unavailable or failed probes: 192.168.1.100", text)
+        self.assertIn("192.168.1.109, and 2 more", text)
+        self.assertIn("... and 34 more host evidence rows.", text)
+        self.assertIn("Probe outcomes (aggregated): 24 attempted", text)
+        self.assertIn(
+            "Terminal previews show at most 10 addresses or host rows.", text
+        )
+        self.assertIn("driftbox discover 192.168.1.0/24 --json", text)
+        self.assertNotIn("192.168.1.11     ", text)
+        summary_text = text.split("WHAT THIS MEANS", maxsplit=1)[0]
+        self.assertNotIn("192.168.1.80", summary_text)
 
 
 if __name__ == "__main__":

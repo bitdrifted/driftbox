@@ -111,7 +111,7 @@ Positive host evidence: 4 addresses; 1 reply.
 This computer's address: 192.168.1.1
 Devices that responded during the scan: 192.168.1.2
 Devices supported only by neighbor/cache evidence: 192.168.1.3
-Addresses that did not respond: 192.168.1.3, 192.168.1.4
+Addresses that did not respond: 2.
 Confirmed default gateway: 192.168.1.4
 Collection errors or incomplete evidence: reachability=partial (some probes failed); probe issues at 192.168.1.5, 192.168.1.6.
 
@@ -160,6 +160,7 @@ RECOMMENDED NEXT STEPS
 
 DETAILED EVIDENCE
 -----------------
+Terminal previews show at most 10 addresses or host rows. For complete structured evidence from a newly authorized collection, use: driftbox discover 192.168.1.0/29 --json
 ADDRESS         CLASSIFICATION              EVIDENCE
 --------------- --------------------------- --------------------------------
 192.168.1.1     local machine               local interface address (source: local interface data)
@@ -167,11 +168,24 @@ ADDRESS         CLASSIFICATION              EVIDENCE
 192.168.1.3     locally known neighbor      neighbor/cache entry (source: ARP cache)
 192.168.1.4     configured gateway/router   configured default-gateway route (source: local routing table, interface: eth0)
 
-Probe summary: 5 attempted; 1 reply; 1 without an observed reply; 1 timed out; 1 unavailable; 1 error.
+Probe outcomes (aggregated): 5 attempted; 1 reply; 1 without an observed reply; 1 timed out; 1 unavailable; 1 error.
 Neighbor/cache evidence: available.
 Hostnames: not collected (unavailable metadata; reverse DNS is disabled).
 Silence is inconclusive and never means that a host does not exist.
+Addresses that did not respond (terminal preview): 192.168.1.3, 192.168.1.4
 ```
+
+Human-readable discovery output is intentionally bounded: each address list
+and the host-evidence table shows at most 10 items, followed by `and N more`
+when additional evidence exists. The summary always states the silent-address
+count, while detailed evidence aggregates probe outcomes. To collect complete
+schema-versioned JSON for an explicitly authorized CIDR, use
+`driftbox discover CIDR --json`; that new collection retains all evidence rather
+than the terminal preview. This change follows a real, explicitly authorized
+user test in which a `/24` discovery completed successfully but the old default
+output exceeded the terminal capture buffer by enumerating silent addresses.
+The defect was found before PR #17 was merged; the human view is now bounded
+while schema-v2 JSON remains complete.
 
 Discovery uses short, unprivileged ICMP echo commands and reads the operating
 system's local neighbor cache and routing table. Routing-table collection is

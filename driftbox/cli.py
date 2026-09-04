@@ -705,6 +705,20 @@ _DISCOVERY_SOURCE_LABELS = {
     "routing_table": "local routing table",
 }
 
+_HUMAN_DISCOVERY_ITEM_LIMIT = 10
+
+
+def _format_bounded_discovery_items(items: list[object]) -> str:
+    """Render a deterministic terminal preview without losing JSON evidence."""
+    values = [str(item) for item in items]
+    if not values:
+        return "none recorded"
+    preview = ", ".join(values[:_HUMAN_DISCOVERY_ITEM_LIMIT])
+    remaining = len(values) - _HUMAN_DISCOVERY_ITEM_LIMIT
+    if remaining > 0:
+        return f"{preview}, and {remaining} more"
+    return preview
+
 
 def _format_discovery_evidence(evidence: object) -> str:
     """Format one host's evidence without overstating what it proves."""
@@ -797,7 +811,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
     if addresses_with_probe_errors:
         collection_issue_text += (
             "; probe issues at "
-            + ", ".join(str(item) for item in addresses_with_probe_errors)
+            + _format_bounded_discovery_items(addresses_with_probe_errors)
         )
 
     host_address_count = int(target["host_address_count"])
@@ -812,6 +826,9 @@ def format_network_discovery(report: dict[str, object]) -> str:
     positive_label = "address" if positive_count == 1 else "addresses"
     error_count = int(summary.get("probe_errors", 0))
     error_label = "error" if error_count == 1 else "errors"
+    target_cidr = discovery_summary.get("target_cidr")
+    if not isinstance(target_cidr, str):
+        raise ValueError("Discovery interpretation target is malformed.")
 
     lines = [
         "driftbox :: authorized private-network discovery",
@@ -837,23 +854,22 @@ def format_network_discovery(report: dict[str, object]) -> str:
         ),
         (
             "This computer's address: "
-            f"{', '.join(str(item) for item in local_computer_addresses) or 'none recorded'}"
+            f"{_format_bounded_discovery_items(local_computer_addresses)}"
         ),
         (
             "Devices that responded during the scan: "
-            f"{', '.join(str(item) for item in responsive_devices) or 'none recorded'}"
+            f"{_format_bounded_discovery_items(responsive_devices)}"
         ),
         (
             "Devices supported only by neighbor/cache evidence: "
-            f"{', '.join(str(item) for item in cache_only_devices) or 'none recorded'}"
+            f"{_format_bounded_discovery_items(cache_only_devices)}"
         ),
         (
-            "Addresses that did not respond: "
-            f"{', '.join(str(item) for item in addresses_without_response) or 'none recorded'}"
+            f"Addresses that did not respond: {len(addresses_without_response)}."
         ),
         (
             "Confirmed default gateway: "
-            f"{', '.join(str(item) for item in confirmed_gateways) or 'none recorded'}"
+            f"{_format_bounded_discovery_items(confirmed_gateways)}"
         ),
         (
             "Collection errors or incomplete evidence: "
@@ -899,6 +915,12 @@ def format_network_discovery(report: dict[str, object]) -> str:
         )
 
     lines.extend(["", "DETAILED EVIDENCE", "-----------------"])
+    lines.append(
+        "Terminal previews show at most "
+        f"{_HUMAN_DISCOVERY_ITEM_LIMIT} addresses or host rows. For complete "
+        f"structured evidence from a newly authorized collection, use: "
+        f"driftbox discover {target_cidr} --json"
+    )
 
     if hosts:
         lines.extend(
@@ -907,7 +929,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
                 f"{'-' * 15} {'-' * 27} {'-' * 32}",
             ]
         )
-        for host in hosts:
+        for host in hosts[:_HUMAN_DISCOVERY_ITEM_LIMIT]:
             if not isinstance(host, dict):
                 continue
             address = str(host.get("address", "unavailable"))
@@ -919,6 +941,9 @@ def format_network_discovery(report: dict[str, object]) -> str:
                 f"{address:<15} {classification:<27} "
                 f"{_format_discovery_evidence(host.get('evidence'))}"
             )
+        remaining_hosts = len(hosts) - _HUMAN_DISCOVERY_ITEM_LIMIT
+        if remaining_hosts > 0:
+            lines.append(f"... and {remaining_hosts} more host evidence rows.")
     else:
         lines.append("No positive host evidence was collected.")
 
@@ -942,7 +967,7 @@ def format_network_discovery(report: dict[str, object]) -> str:
                 f"{summary.get('confirmed_gateway', 0)} configured gateway/router)."
             ),
             (
-                f"Probe summary: {summary.get('addresses_probed', 0)} attempted; "
+                f"Probe outcomes (aggregated): {summary.get('addresses_probed', 0)} attempted; "
                 f"{response_count} {response_label}; "
                 f"{summary.get('no_response_observed', 0)} without an observed reply; "
                 f"{summary.get('probe_timeouts', 0)} timed out; "
@@ -962,12 +987,12 @@ def format_network_discovery(report: dict[str, object]) -> str:
             "Hostnames: not collected (unavailable metadata; reverse DNS is disabled).",
             "Silence is inconclusive and never means that a host does not exist.",
             (
-                "Addresses without an observed reply: "
-                f"{', '.join(str(item) for item in addresses_without_response) or 'none recorded'}"
+                "Addresses that did not respond (terminal preview): "
+                f"{_format_bounded_discovery_items(addresses_without_response)}"
             ),
             (
                 "Addresses with unavailable or failed probes: "
-                f"{', '.join(str(item) for item in addresses_with_probe_errors) or 'none recorded'}"
+                f"{_format_bounded_discovery_items(addresses_with_probe_errors)}"
             ),
             "Evidence sources: ICMP reachability, local interface data, local neighbor/cache records, and local default-route records only.",
             "Incomplete collection sources:",
