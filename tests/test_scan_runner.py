@@ -163,7 +163,7 @@ class ScanRunnerTests(unittest.TestCase):
         self.assertTrue(second.findings.actionable)
         self.assertIn("integrity-file-modified", finding_ids)
         self.assertIn("listener-newly-detected", finding_ids)
-        self.assertIn("listener-all-interfaces", finding_ids)
+        self.assertIn("posture-no-actionable-findings", finding_ids)
         self.assertEqual(finding_ids, sorted(finding_ids))
 
     def test_previous_snapshot_is_read_before_current_is_captured(self) -> None:
@@ -229,7 +229,7 @@ class ScanRunnerTests(unittest.TestCase):
         capture.assert_not_called()
 
     def test_actionable_scan_returns_one(self) -> None:
-        current = report(address="0.0.0.0", scope="all interfaces")
+        current = report(port=445, address="0.0.0.0", scope="all interfaces")
         with (
             tempfile.TemporaryDirectory() as config_directory,
             tempfile.TemporaryDirectory() as state_directory,

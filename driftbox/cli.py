@@ -109,7 +109,7 @@ from driftbox.report_diff import (
     load_baseline,
     normalize_report,
 )
-from driftbox.security_checks import analyze_security_posture
+from driftbox.security_checks import analyze_security_posture, format_check_result
 from driftbox.scan_runner import run_scan
 from driftbox.scheduler import scheduler_for_platform
 
@@ -447,16 +447,14 @@ def verify_integrity(path: str, manifest_path: str) -> int:
 def show_security_checks(json_output: bool = False) -> int:
     """Analyze current inspection data and return a command exit code."""
     try:
-        result = posture_findings(
-            analyze_security_posture(
-                collect_firewall_info(),
-                collect_listening_ports(),
-            )
+        result = analyze_security_posture(
+            collect_firewall_info(),
+            collect_listening_ports(),
         )
         if json_output:
             output = json.dumps(result.as_dict(), indent=2, sort_keys=True)
         else:
-            output = format_findings(result, "security posture")
+            output = format_check_result(result)
         print(output)
     except Exception as error:
         try:
@@ -1879,13 +1877,13 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("report", help="Generate a portable JSON system report")
     check_parser = commands.add_parser(
         "check",
-        help="Analyze firewall and listening-port security posture",
+        help="Triage firewall and grouped listener posture",
     )
     check_parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
-        help="Write a machine-readable JSON result",
+        help="Write complete posture-triage schema version 2 evidence",
     )
     analyze_parser = commands.add_parser(
         "analyze",

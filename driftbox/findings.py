@@ -76,78 +76,117 @@ def build_findings(findings: Iterable[Finding]) -> FindingsResult:
 
 
 def posture_findings(posture_result: object) -> FindingsResult:
-    """Convert existing security-posture observations to unified findings."""
-    observations = getattr(posture_result, "observations", None)
-    if not isinstance(observations, tuple):
+    """Map explicit posture triage levels into the stable unified vocabulary."""
+    triage_items = getattr(posture_result, "triage_items", None)
+    if not isinstance(triage_items, tuple):
         raise ValueError("invalid security posture result")
 
-    findings = []
-    for observation in observations:
-        observation_id = getattr(observation, "id", None)
-        evidence = getattr(observation, "evidence", None)
-        if not isinstance(observation_id, str) or not isinstance(evidence, dict):
-            raise ValueError("invalid security posture observation")
+    level_mapping = {
+        "informational": "normal",
+        "review": "suspicious",
+        "urgent": "critical",
+    }
+    findings: list[Finding] = []
+    informational_count = 0
+    for item in triage_items:
+        item_id = getattr(item, "id", None)
+        category = getattr(item, "category", None)
+        level = getattr(item, "triage_level", None)
+        classification = getattr(item, "unified_classification", None)
+        title = getattr(item, "title", None)
+        explanation = getattr(item, "explanation", None)
+        uncertainty = getattr(item, "uncertainty", None)
+        evidence = getattr(item, "evidence", None)
+        if (
+            not isinstance(item_id, str)
+            or category not in {"firewall", "listener_group"}
+            or level_mapping.get(level) != classification
+            or not all(isinstance(value, str) for value in (title, explanation, uncertainty))
+            or not isinstance(evidence, dict)
+        ):
+            raise ValueError("invalid security posture triage item")
+        if category == "firewall":
+            status = evidence.get("status")
+            expected_level = {
+                "enabled": "informational",
+                "disabled": "urgent",
+                "unknown": "review",
+                "mixed": "review",
+            }.get(status)
+            if item_id != "firewall-state" or expected_level != level:
+                raise ValueError("invalid firewall posture triage evidence")
+        else:
+            members = evidence.get("members")
+            raw_count = evidence.get("raw_endpoint_count")
+            if (
+                evidence.get("id") != item_id
+                or evidence.get("triage_level") != level
+                or evidence.get("unified_classification") != classification
+                or not isinstance(members, list)
+                or not members
+                or not all(isinstance(member, dict) for member in members)
+                or isinstance(raw_count, bool)
+                or not isinstance(raw_count, int)
+                or raw_count != len(members)
+            ):
+                raise ValueError("invalid listener posture triage evidence")
+        if level == "informational":
+            informational_count += 1
+            continue
 
-        if observation_id == "firewall-disabled":
+        if category == "firewall" and level == "urgent":
             findings.append(
                 Finding(
                     "firewall-currently-disabled",
                     "critical",
                     "Firewall is disabled",
-                    (
-                        "The local firewall is confirmed disabled, reducing a "
-                        "layer of network protection."
-                    ),
+                    f"{explanation} {uncertainty}",
                     evidence,
                     (
-                        "Confirm this is intentional and enable an appropriate "
-                        "firewall policy if it is not."
+                        "Confirm with the asset owner whether the state is "
+                        "authorized and inspect current status with driftbox firewall."
                     ),
                 )
             )
-        elif observation_id == "firewall-unknown":
+        elif category == "firewall" and level == "review":
             findings.append(
                 Finding(
                     "firewall-state-unknown",
                     "suspicious",
-                    "Firewall state is unknown",
-                    (
-                        "Driftbox could not determine firewall state, so "
-                        "protection must not be assumed."
-                    ),
+                    title,
+                    f"{explanation} {uncertainty}",
                     evidence,
                     (
-                        "Inspect the platform firewall with an authorized local "
-                        "tool and confirm its policy."
+                        "Inspect the available local firewall evidence with "
+                        "driftbox firewall; do not assume protection."
                     ),
                 )
             )
-        elif observation_id in (
-            "listener-all-interfaces",
-            "listener-public-address",
-        ):
-            scope = evidence.get("scope", "unknown")
+        elif category == "listener_group" and level == "review":
+            scopes = {
+                member.get("scope")
+                for member in members
+            }
+            finding_id = (
+                "listener-public-address"
+                if "public address" in scopes
+                else "listener-all-interfaces"
+            )
             findings.append(
                 Finding(
-                    observation_id,
+                    finding_id,
                     "suspicious",
-                    f"Service has a {scope} binding",
-                    (
-                        "The service has a broad network binding. This does not "
-                        "prove internet accessibility because firewall policy, "
-                        "routing, and NAT affect reachability."
-                    ),
+                    title,
+                    f"{explanation} {uncertainty}",
                     evidence,
                     (
-                        "Confirm the binding is required and review firewall, "
-                        "routing, and NAT controls."
+                        "Confirm the observed binding is expected with the asset "
+                        "owner and preserve driftbox check --json evidence for review."
                     ),
                 )
             )
         else:
-            raise ValueError(
-                f"unsupported security posture observation: {observation_id}"
-            )
+            raise ValueError("unsupported actionable posture triage item")
 
     if not findings:
         findings.append(
@@ -156,10 +195,10 @@ def posture_findings(posture_result: object) -> FindingsResult:
                 "normal",
                 "No actionable posture findings",
                 (
-                    "Current firewall and listener observations did not trigger "
-                    "a suspicious or critical rule."
+                    "Current posture triage produced only informational evidence. "
+                    "This does not prove the system safe or vulnerability-free."
                 ),
-                {},
+                {"informational_item_count": informational_count},
                 "Continue routine monitoring and compare future reports for drift.",
             )
         )
